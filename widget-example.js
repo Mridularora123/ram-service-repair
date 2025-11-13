@@ -1,384 +1,561 @@
-/**
- * RAM Service Repair — embeddable widget
- * Drop this file on your server at /widget.js and include:
- *   <div id="ram-service-widget"></div>
- *   <script src="https://ram-service-repair1.onrender.com/widget.js" async></script>
- *
- * Notes:
- * - Uses your server endpoints at same host (relative fetch paths).
- * - Expects CORS allowed (server.js already uses cors()).
- * - No external libs. Works in modern browsers.
- */
-
+/* RAM Service Repair — storefront widget
+   Replace widget-example.js with this file and serve it at /widget.js
+   Expects these endpoints:
+   - GET /api/categories
+   - GET /api/series
+   - GET /api/series/:seriesId/models
+   - GET /api/models?category=slug
+   - GET /api/repairs?modelId=MODEL_ID
+   - POST /api/submit
+   Admin password etc are server-side — nothing secret here.
+*/
 (function () {
-  const MOUNT_ID = 'ram-service-widget';
-  const mount = document.getElementById(MOUNT_ID) || (function createMount(){
-    const el = document.createElement('div');
-    el.id = MOUNT_ID;
-    document.body.appendChild(el);
-    return el;
-  })();
+  // ---- CONFIG ----------
+  const API_BASE = (window.RAM_SERVICE_API_BASE || '').replace(/\/$/, '') || 'https://ram-service-repair1.onrender.com';
+  const mountId = 'ram-service-widget';
+  const ns = 'ramsvc'; // CSS namespace
 
-  // Small utility
-  function el(tag, attrs = {}, children = []) {
-    const node = document.createElement(tag);
-    Object.entries(attrs).forEach(([k, v]) => {
-      if (k === 'class') node.className = v;
-      else if (k === 'html') node.innerHTML = v;
-      else node.setAttribute(k, String(v));
-    });
-    (Array.isArray(children) ? children : [children]).forEach(c => {
-      if (!c) return;
-      node.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
-    });
-    return node;
-  }
-  function q(sel, root=document) { return root.querySelector(sel); }
-  function qa(sel, root=document) { return Array.from(root.querySelectorAll(sel)); }
+  // ---- small helpers ----
+  const q = (s, p = document) => p.querySelector(s);
+  const ce = (tag, cls) => {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    return e;
+  };
+  const money = v => {
+    if (v === null || v === undefined) return 'CALL_FOR_PRICE';
+    // we store cents maybe (15000 -> 150.00). If value looks large, format.
+    if (Number.isInteger(v)) return (v / 100).toLocaleString() + ' €';
+    if (!isNaN(Number(v))) return Number(v).toLocaleString() + ' €';
+    return String(v);
+  };
 
-  function formatPrice(cents, currency='EUR') {
-    if (cents == null) return 'Pokličite za ceno';
-    try {
-      return new Intl.NumberFormat(undefined, { style:'currency', currency }).format(cents/100);
-    } catch (e) {
-      return (cents/100).toFixed(2) + ' ' + currency;
-    }
+  function apiGET(path) {
+    return fetch(API_BASE + path, { credentials: 'omit' })
+      .then(r => {
+        if (!r.ok) throw new Error('Network error ' + r.status);
+        return r.json();
+      });
   }
 
-  // API helpers (relative)
-  const API_ROOT = (function () {
-    // if widget is loaded from app host, use that host origin, otherwise fallback to current host
-    try {
-      const script = document.currentScript && document.currentScript.src;
-      if (script) {
-        const url = new URL(script);
-        return url.origin;
-      }
-    } catch (e) {}
-    return (location.protocol + '//' + location.host);
-  })();
-
-  function api(path, opts) {
-    return fetch(API_ROOT + path, opts).then(r => {
-      if (!r.ok) return r.text().then(t => { throw new Error('API error ' + r.status + ' ' + t); });
+  function apiPOST(path, body) {
+    return fetch(API_BASE + path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    }).then(r => {
+      if (!r.ok) return r.json().then(j => { throw j; });
       return r.json();
     });
   }
 
-  // --- initial skeleton ---
-  mount.innerHTML = '';
-  mount.className = 'ram-widget-root';
-  const container = el('div', { class: 'ram-widget container' });
-  mount.appendChild(container);
+  // ---- inject CSS (namespaced) ----
+  const css = `
+  /* widget base */
+  #${mountId} .${ns}-wrap{font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; color:#111;}
+  #${mountId} .${ns}-center{text-align:center;}
+  #${mountId} h2.${ns}-heading{font-size:28px;margin:24px 0 18px 0;font-weight:700;}
+  #${mountId} .${ns}-grid{display:flex;flex-wrap:wrap;gap:24px;justify-content:center;margin:18px 0;}
+  #${mountId} .${ns}-tile{width:220px;height:180px;background:#ecf3ff;border-radius:10px;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:14px;cursor:pointer;transition:transform .12s,box-shadow .12s;}
+  #${mountId} .${ns}-tile:hover{transform:translateY(-4px);box-shadow:0 8px 20px rgba(0,0,0,.06);}
+  #${mountId} .${ns}-tile.selected{background:#cfd8e6;}
+  #${mountId} .${ns}-tile img{max-height:70px;max-width:120px;object-fit:contain;margin-bottom:12px;}
+  #${mountId} .${ns}-tile h4{margin:0;font-size:16px;font-weight:700;}
+  #${mountId} .${ns}-pill{display:inline-block;border-radius:40px;padding:12px 26px;border:2px solid #121212; font-weight:700;background:#fff; margin: 10px auto; cursor:pointer;}
+  #${mountId} .${ns}-priceCard{background:#e7eefc;padding:18px;border-radius:8px;display:flex;gap:18px;align-items:center;justify-content:space-between;}
+  #${mountId} .${ns}-form{max-width:920px;margin:26px auto;background:#f4fbff;padding:22px;border-radius:8px;}
+  #${mountId} .${ns}-row{display:flex;gap:16px;flex-wrap:wrap;}
+  #${mountId} .${ns}-col{flex:1 1 220px;min-width:220px;}
+  #${mountId} label{display:block;font-size:13px;margin-bottom:6px;font-weight:600;}
+  #${mountId} input[type=text], #${mountId} input[type=email], #${mountId} input[type=tel], #${mountId} textarea, #${mountId} select {
+    width:100%; padding:10px 12px;border-radius:999px;border:2px solid #d0d6dd;background:white;box-sizing:border-box;
+  }
+  #${mountId} textarea{min-height:120px;border-radius:12px;}
+  #${mountId} .${ns}-hr{height:1px;background:#d6dde6;margin:18px 0;}
+  #${mountId} .${ns}-btn{display:inline-block;padding:12px 18px;border-radius:28px;background:#0a63d6;color:#fff;font-weight:700;border:none;cursor:pointer;}
+  #${mountId} .${ns}-muted{color:#6c6f76;font-size:13px;}
+  #${mountId} .${ns}-summaryTitle{font-weight:700;margin:0 0 4px 0;}
+  #${mountId} .${ns}-centerCol{max-width:1200px;margin:0 auto;padding:0 20px;}
+  #${mountId} .${ns}-hidden{display:none;}
+  /* responsive */
+  @media (max-width:900px){
+    #${mountId} .${ns}-tile{width:45%;}
+    #${mountId} .${ns}-col{min-width:100%;}
+  }
+  @media (max-width:480px){
+    #${mountId} .${ns}-tile{width:100%;}
+    #${mountId} .${ns}-grid{gap:12px;}
+  }
+  `;
+  const style = ce('style'); style.innerText = css; document.head.appendChild(style);
 
-  // Basic styles (scoped)
-  const style = document.createElement('style');
-  style.innerHTML = `
-.ram-widget .row { display:flex; gap:18px; flex-wrap:wrap; justify-content:center; }
-.ram-widget .title { text-align:center; font-size:26px; margin:24px 0; font-weight:700; }
-.ram-widget .tile { width:260px; min-height:180px; border-radius:10px; background:#eef6ff; display:flex;flex-direction:column;align-items:center;justify-content:center;padding:22px;cursor:pointer;transition:all .15s;border:1px solid transparent; }
-.ram-widget .tile.selected { background:#c9d6e8; transform:translateY(-4px); border-color:#a9b6c8; }
-.ram-widget .tile img { max-height:90px; object-fit:contain; margin-bottom:12px; }
-.ram-widget .select-wrap { width:100%; display:flex; justify-content:center; margin:18px 0; }
-.ram-widget select { padding:12px 18px; border-radius:28px; border:1px solid #222; min-width:320px; max-width:560px; font-weight:600; }
-.ram-widget .repairs { display:flex; gap:12px; flex-wrap:wrap; justify-content:center; margin-top:16px; }
-.ram-widget .repair { width:200px; min-height:160px; background:#eef6ff; border-radius:8px; padding:14px; text-align:center; cursor:pointer; border:1px solid transparent; }
-.ram-widget .repair.selected { background:#cfe3f3; border-color:#9fb6ce; transform:translateY(-3px); }
-.ram-widget .fs { display:flex; gap:12px; align-items:center; justify-content:center; margin-top:18px; }
-.ram-widget .price { font-size:20px; font-weight:700; }
-.ram-widget .form { margin:18px auto; max-width:760px; padding:16px; border-radius:8px; background:#f8fbff; border:1px solid #e6eef8; }
-.ram-widget .form label { display:block; margin-bottom:6px; font-weight:600; }
-.ram-widget .form input, .ram-widget .form textarea { width:100%; padding:10px 12px; border-radius:6px; border:1px solid #ccc; margin-bottom:12px; }
-.ram-widget .btn { background:#0b66d3; color:#fff; padding:10px 16px; border-radius:8px; cursor:pointer; border:0; font-weight:700; }
-.ram-widget .muted { color:#666; font-size:13px; }
-.ram-widget .small { font-size:13px; color:#444; }
-`;
-  document.head.appendChild(style);
+  // ---- build UI skeleton ----
+  const mount = document.getElementById(mountId);
+  if (!mount) {
+    console.error('RAM Service widget: missing mount element with id #' + mountId);
+    return;
+  }
+  mount.classList.add(ns + '-wrap');
 
-  // UI pieces
-  const title = el('div', { class: 'title' }, 'Select device category');
-  container.appendChild(title);
+  // header
+  const header = ce('div', ns + '-center');
+  header.innerHTML = `<h2 class="${ns}-heading">Select device category</h2>`;
+  mount.appendChild(header);
 
-  const categoriesWrap = el('div', { class: 'row', id: 'r-categories' });
-  container.appendChild(categoriesWrap);
+  // containers
+  const categoryWrap = ce('div', ns + '-centerCol');
+  const categoryGrid = ce('div', ns + '-grid'); categoryWrap.appendChild(categoryGrid);
+  mount.appendChild(categoryWrap);
 
-  const seriesWrap = el('div', { class: 'row', id: 'r-series', style: 'margin-top:6px;' });
-  container.appendChild(seriesWrap);
+  // series
+  const seriesWrap = ce('div', ns + '-centerCol');
+  const seriesTitle = ce('h3', ns + '-heading'); seriesTitle.innerText = 'Select Series';
+  const seriesGrid = ce('div', ns + '-grid'); seriesWrap.appendChild(seriesTitle); seriesWrap.appendChild(seriesGrid);
+  mount.appendChild(seriesWrap);
 
-  const modelWrap = el('div', { class: 'select-wrap', id: 'r-model' });
-  container.appendChild(modelWrap);
+  // model pill
+  const modelWrap = ce('div', ns + '-centerCol');
+  const modelPill = ce('div', ns + '-pill'); modelPill.innerText = 'Select a model from the list...'; modelPill.style.display = 'block'; modelPill.style.width = 'fit-content';
+  modelWrap.appendChild(modelPill);
+  mount.appendChild(modelWrap);
 
-  const repairsWrap = el('div', { class: 'repairs', id: 'r-repairs' });
-  container.appendChild(repairsWrap);
+  // damage types (repairs)
+  const damageTitle = ce('h3', ns + '-heading'); damageTitle.innerText = 'Select type of injury';
+  const damageGrid = ce('div', ns + '-grid');
+  mount.appendChild(damageTitle); mount.appendChild(damageGrid);
 
-  const finalWrap = el('div', { class: 'fs', id: 'r-final' });
-  container.appendChild(finalWrap);
+  // summary + form area
+  const summaryWrap = ce('div', ns + '-centerCol');
+  const priceCard = ce('div', ns + '-priceCard'); priceCard.style.marginTop = '20px';
+  const cardLeft = ce('div'); const cardRight = ce('div'); cardLeft.innerHTML = `<div class="${ns}-summaryTitle"></div><div class="${ns}-muted"></div>`;
+  cardRight.innerHTML = `<div style="text-align:right"><div class="${ns}-muted">Your price:</div><div class="${ns}-summaryPrice" style="font-size:20px;font-weight:800"></div></div>`;
+  priceCard.appendChild(cardLeft); priceCard.appendChild(cardRight);
+  summaryWrap.appendChild(priceCard);
 
-  const formWrap = el('div', { class: 'form', id: 'r-form', style: 'display:none;' });
-  container.appendChild(formWrap);
+  const formWrap = ce('div', ns + '-form');
+  mount.appendChild(summaryWrap);
+  mount.appendChild(formWrap);
 
-  // State
+  // state
   const state = {
     categories: [],
-    selectedCategory: null,
     series: [],
+    selectedCategory: null,
     selectedSeries: null,
     models: [],
     selectedModel: null,
     repairs: [],
-    selectedRepair: null
+    selectedRepair: null,
+    price: null
   };
 
-  // Render helpers
+  // ---- render helpers ----
+  function clearChildren(el) { while (el.firstChild) el.removeChild(el.firstChild); }
   function renderCategories() {
-    categoriesWrap.innerHTML = '';
+    clearChildren(categoryGrid);
     if (!state.categories || state.categories.length === 0) {
-      categoriesWrap.appendChild(el('div', { class: 'muted' }, 'No categories configured yet.'));
+      categoryGrid.appendChild(ce('div')).innerText = 'No categories configured';
       return;
     }
-    state.categories.forEach(c => {
-      const img = c.iconUrl ? el('img', { src: c.iconUrl, alt: c.name }) : el('div', { html: '' });
-      const t = el('div', { class: 'tile', 'data-slug': c.slug }, [
-        img,
-        el('div', { class: 'small' }, c.name)
-      ]);
+    state.categories.forEach(cat => {
+      const t = ce('div', ns + '-tile');
+      t.setAttribute('data-slug', cat.slug || '');
+      const img = ce('img'); img.src = cat.iconUrl || ''; img.alt = cat.name || '';
+      const h = ce('h4'); h.innerText = cat.name;
+      t.appendChild(img); t.appendChild(h);
       t.onclick = () => {
-        state.selectedCategory = c;
-        state.selectedSeries = null;
-        state.selectedModel = null;
-        state.selectedRepair = null;
-        // if server returned series embedded, use them
-        state.series = c.series || [];
-        // if no embedded series, attempt to fetch series via /api/series?categoryId (fallback to models)
-        renderAll();
-        if (!state.series || state.series.length === 0) {
-          // fallback: try fetch models by category and compute seriesless option
-          fetchModelsForCategory(c.slug).then(models => {
-            state.models = models;
-            renderAll();
-          }).catch(e => console.warn('no models for category', e));
-        }
+        state.selectedCategory = cat;
+        // highlight
+        Array.from(categoryGrid.children).forEach(c => c.classList.remove('selected'));
+        t.classList.add('selected');
+        // load series for this category
+        loadSeries(cat);
+        // reset downstream
+        state.selectedSeries = null; state.models = []; state.selectedModel = null; state.repairs = []; state.selectedRepair = null;
+        renderSeries([]);
+        renderModelsPill(null);
+        renderRepairs([]);
+        renderForm(false);
       };
-      categoriesWrap.appendChild(t);
+      categoryGrid.appendChild(t);
     });
+    // scroll into view
+    categoryGrid.scrollIntoView({ behavior: 'smooth', block: 'center' });
   }
 
-  function renderSeries() {
-    seriesWrap.innerHTML = '';
-    if (!state.series || state.series.length === 0) return;
-    const title = el('div', { class: 'title' }, 'Select Series');
-    seriesWrap.appendChild(title);
-    const row = el('div', { class: 'row' });
-    state.series.forEach(s => {
-      const img = s.iconUrl ? el('img', { src: s.iconUrl, alt: s.name }) : el('div', { html: '' });
-      const t = el('div', { class: 'tile', 'data-id': s._id }, [
-        img,
-        el('div', { class: 'small' }, s.name)
-      ]);
+  function renderSeries(list) {
+    clearChildren(seriesGrid);
+    if (!list || list.length === 0) {
+      seriesGrid.appendChild(ce('div')).innerText = 'No series';
+      return;
+    }
+    list.forEach(s => {
+      const t = ce('div', ns + '-tile');
+      const img = ce('img'); img.src = s.iconUrl || ''; img.alt = s.name || '';
+      const h = ce('h4'); h.innerText = s.name;
+      t.appendChild(img); t.appendChild(h);
       t.onclick = () => {
         state.selectedSeries = s;
-        state.selectedModel = null;
-        state.selectedRepair = null;
-        // fetch models for this series
-        fetch(`${API_ROOT}/api/series/${s._id}/models`).then(r => r.json()).then(resp => {
-          state.models = resp.items || resp || [];
-          renderAll();
-        }).catch(err => {
-          console.error('error fetching models for series', err);
-          state.models = [];
-          renderAll();
-        });
+        Array.from(seriesGrid.children).forEach(c => c.classList.remove('selected'));
+        t.classList.add('selected');
+        // load models for series
+        loadModelsForSeries(s._id);
+        // reset
+        state.selectedModel = null; state.repairs = []; state.selectedRepair = null;
+        renderModelsPill(null);
+        renderRepairs([]);
+        renderForm(false);
       };
-      row.appendChild(t);
+      seriesGrid.appendChild(t);
     });
-    seriesWrap.appendChild(row);
+    seriesGrid.scrollIntoView({ behavior: 'smooth', block: 'center' });
   }
 
-  function renderModels() {
-    modelWrap.innerHTML = '';
-    // if models exist show select
-    if (!state.models || state.models.length === 0) return;
-    const sel = el('select', { id: 'r-model-select' });
-    sel.appendChild(el('option', { value: '' }, 'Select a model from the list…'));
-    state.models.forEach(m => {
-      const opt = el('option', { value: m._id }, (m.name || m.slug || m._id));
-      sel.appendChild(opt);
-    });
-    sel.onchange = () => {
-      const id = sel.value;
-      state.selectedModel = state.models.find(x => String(x._id) === String(id));
-      state.selectedRepair = null;
-      if (state.selectedModel) {
-        fetchRepairsForModel(state.selectedModel._id).then(list => {
-          state.repairs = list;
-          renderAll();
-        });
-      } else {
-        state.repairs = [];
-        renderAll();
-      }
-    };
-    modelWrap.appendChild(sel);
-  }
-
-  function renderRepairs() {
-    repairsWrap.innerHTML = '';
-    if (!state.repairs || state.repairs.length === 0) return;
-    const title = el('div', { class: 'title' }, 'Select type of injury');
-    repairsWrap.appendChild(title);
-    state.repairs.forEach(rp => {
-      const r = el('div', { class: 'repair', 'data-code': rp.code }, [
-        rp.images && rp.images[0] ? el('img', { src: rp.images[0], alt: rp.name }) : el('div', { html: '' }),
-        el('div', { class: 'small' }, rp.name),
-        el('div', { class: 'muted' }, formatPrice(rp.priceEffective, rp.currency || 'EUR'))
-      ]);
-      r.onclick = () => {
-        state.selectedRepair = rp;
-        // show contact form and price
-        renderAll();
-      };
-      repairsWrap.appendChild(r);
-    });
-  }
-
-  function renderFinal() {
-    finalWrap.innerHTML = '';
-    if (!state.selectedRepair) return;
-    const priceDiv = el('div', { class: 'price' }, formatPrice(state.selectedRepair.priceEffective, state.selectedRepair.currency || 'EUR'));
-    finalWrap.appendChild(priceDiv);
-    const title = el('div', { class: 'small' }, state.selectedRepair.name);
-    finalWrap.appendChild(title);
-  }
-
-  function renderForm() {
-    formWrap.innerHTML = '';
-    if (!state.selectedRepair) { formWrap.style.display = 'none'; return; }
-    formWrap.style.display = 'block';
-    formWrap.appendChild(el('h3', {}, 'Repair form'));
-    // contact fields
-    const nameLabel = el('label', {}, 'Full name');
-    const nameInput = el('input', { type:'text', id:'r-contact-name', placeholder:'Full name' });
-    const emailLabel = el('label', {}, 'Email');
-    const emailInput = el('input', { type:'email', id:'r-contact-email', placeholder:'Email' });
-    const phoneLabel = el('label', {}, 'Phone');
-    const phoneInput = el('input', { type:'text', id:'r-contact-phone', placeholder:'Phone' });
-
-    formWrap.appendChild(nameLabel); formWrap.appendChild(nameInput);
-    formWrap.appendChild(emailLabel); formWrap.appendChild(emailInput);
-    formWrap.appendChild(phoneLabel); formWrap.appendChild(phoneInput);
-
-    formWrap.appendChild(el('label', {}, 'Additional notes (optional)'));
-    const notes = el('textarea', { id:'r-contact-notes', rows:4, placeholder:'Describe the issue' });
-    formWrap.appendChild(notes);
-
-    const consentWrap = el('div', { style: 'margin-bottom:10px;' }, [
-      el('label', {}, [
-        el('input', { type:'checkbox', id:'r-consent' }),
-        el('span', { html: ' I consent to my data being used for this repair request (GDPR).' })
-      ])
-    ]);
-    formWrap.appendChild(consentWrap);
-
-    const btn = el('button', { class: 'btn', type:'button' }, 'Request repair');
-    btn.onclick = async () => {
-      const contact = {
-        full_name: nameInput.value.trim(),
-        email: emailInput.value.trim(),
-        phone: phoneInput.value.trim()
-      };
-      if (!contact.full_name || !contact.email) {
-        alert('Name and email are required');
-        return;
-      }
-      const payload = {
-        contact,
-        category: state.selectedCategory ? state.selectedCategory._id || state.selectedCategory.slug : null,
-        seriesId: state.selectedSeries ? state.selectedSeries._id : null,
-        modelId: state.selectedModel ? state.selectedModel._id : null,
-        repairOptionId: state.selectedRepair && state.selectedRepair._id ? state.selectedRepair._id : null,
-        repair_code: state.selectedRepair ? state.selectedRepair.code : null,
-        consent: !!q('#r-consent', formWrap)?.checked,
-        metadata: { source: 'widget' }
-      };
-      btn.disabled = true;
-      btn.textContent = 'Sending...';
-      try {
-        const json = await api('/api/submit', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
-        // show confirmation
-        formWrap.innerHTML = '';
-        formWrap.appendChild(el('h3', {}, 'Request received'));
-        formWrap.appendChild(el('div', {}, 'Reference: ' + (json.requestId || json.id || '—')));
-        formWrap.appendChild(el('div', {}, 'Price at submission: ' + (json.price ? formatPrice(json.price) : 'Pokličite za ceno')));
-        formWrap.appendChild(el('div', { style: 'margin-top:10px' }, el('button', { class: 'btn', onclick: 'window.location.reload()' }, 'Reload page')));
-      } catch (err) {
-        console.error('submit error', err);
-        alert('Submit failed: ' + err.message);
-        btn.disabled = false;
-        btn.textContent = 'Request repair';
-      }
-    };
-    formWrap.appendChild(btn);
-  }
-
-  function renderAll() {
-    // reflect selected visuals
-    // categories: mark selected
-    qa('.tile', categoriesWrap).forEach(t => {
-      t.classList.toggle('selected', state.selectedCategory && (t.getAttribute('data-slug') === (state.selectedCategory.slug || '')));
-    });
-    renderSeries();
-    renderModels();
-    renderRepairs();
-    renderFinal();
-    renderForm();
-  }
-
-  // Fetch helpers
-  async function loadCategories() {
-    try {
-      const json = await api('/api/categories');
-      // server returns { ok: true, items: [...] } in my server version
-      const items = (json && (json.items || json)) || [];
-      // normalize: if server returns category objects without series embed, it's OK
-      state.categories = items;
-      renderCategories();
-    } catch (err) {
-      console.error('Failed to load categories', err);
-      categoriesWrap.innerHTML = '<div class="muted">Failed to load categories (check server)</div>';
+  function renderModelsPill(model) {
+    if (!model) {
+      modelPill.innerText = 'Select a model from the list...';
+      modelPill.classList.remove('selected');
+      return;
     }
+    modelPill.innerText = model.name;
+    modelPill.classList.add('selected');
   }
 
-  async function fetchModelsForCategory(categorySlug) {
-    try {
-      const json = await api(`/api/models?category=${encodeURIComponent(categorySlug)}`);
-      const items = (json && (json.items || json)) || [];
-      return items;
-    } catch (err) {
-      console.warn('fetchModelsForCategory failed', err);
-      return [];
+  function renderRepairs(list) {
+    clearChildren(damageGrid);
+    if (!list || list.length === 0) {
+      damageGrid.appendChild(ce('div')).innerText = 'No repair options';
+      return;
     }
+    list.forEach(r => {
+      const t = ce('div', ns + '-tile');
+      const img = ce('img'); img.src = (r.images && r.images[0]) || ''; img.alt = r.name || '';
+      const h = ce('h4'); h.innerText = r.name;
+      const sub = ce('div'); sub.className = ns + '-muted'; sub.style.marginTop = '8px';
+      // priceEffective may be included by API (server code tries to provide)
+      const pe = r.priceEffective !== undefined ? r.priceEffective : r.basePrice;
+      sub.innerText = (pe ? money(pe) : 'Pokličite za ceno');
+      t.appendChild(img); t.appendChild(h); t.appendChild(sub);
+      t.onclick = () => {
+        state.selectedRepair = r;
+        // compute live price
+        computeEffectivePrice();
+        Array.from(damageGrid.children).forEach(c => c.classList.remove('selected'));
+        t.classList.add('selected');
+        // show form
+        renderForm(true);
+        // scroll to form
+        formWrap.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      };
+      damageGrid.appendChild(t);
+    });
+    damageGrid.scrollIntoView({ behavior: 'smooth', block: 'center' });
   }
 
-  async function fetchRepairsForModel(modelId) {
-    try {
-      const json = await api(`/api/repairs?modelId=${encodeURIComponent(modelId)}`);
-      const items = json && (json.items || json) || [];
-      // unify priceEffective property: my server returns number or null
-      return items.map(it => {
-        // priceEffective may be null or number in cents
-        it.priceEffective = (typeof it.priceEffective === 'number') ? it.priceEffective : (typeof it.basePrice === 'number' ? it.basePrice : null);
-        // ensure _id, code, name fields exist
-        return it;
+  // ---- form rendering (full fields) ----
+  function renderForm(show) {
+    clearChildren(formWrap);
+    if (!show) return;
+    // top summary
+    const top = ce('div'); top.className = ns + '-row';
+    top.style.marginBottom = '12px';
+    const left = ce('div', ns + '-col');
+    left.innerHTML = `<div style="display:flex;gap:14px;align-items:center;">
+      <div style="width:120px"><img src="${(state.selectedModel && state.selectedModel.imageUrl) || ''}" style="width:100%;height:auto;object-fit:contain" /></div>
+      <div>
+        <div style="font-weight:900;font-size:16px">${state.selectedModel ? state.selectedModel.name : ''}</div>
+        <div class="${ns}-muted">${state.selectedModel ? state.selectedModel.brand || '' : ''}</div>
+      </div>
+    </div>`;
+    const right = ce('div', ns + '-col');
+    right.innerHTML = `<div class="${ns}-muted">This is how much the repair costs</div>
+      <div style="font-weight:900;font-size:20px;margin-top:6px">${state.selectedRepair ? state.selectedRepair.name : ''}</div>
+      <div style="margin-top:10px;font-size:20px" class="${ns}-summaryPrice">${state.price ? money(state.price) : 'Pokličite za ceno'}</div>`;
+    top.appendChild(left); top.appendChild(right);
+    formWrap.appendChild(top);
+
+    // header
+    const header = ce('h3'); header.innerText = 'REPAIR FORM'; formWrap.appendChild(header);
+
+    // contact info grid (match fields)
+    const grid = ce('div', ns + '-row');
+    grid.style.marginBottom = '12px';
+
+    // columns like your Liquid: company, tax, name, address, postal+city, email, phone
+    const makeField = (labelText, name, type = 'text', placeholder = '', required = false) => {
+      const c = ce('div', ns + '-col');
+      const lab = ce('label'); lab.innerText = labelText + (required ? ' *' : '');
+      const inp = (type === 'textarea') ? ce('textarea') : ce('input');
+      if (type !== 'textarea') inp.type = type;
+      inp.name = name; inp.placeholder = placeholder;
+      if (required) inp.setAttribute('data-required', '1');
+      c.appendChild(lab); c.appendChild(inp);
+      return c;
+    };
+
+    grid.appendChild(makeField('Company', 'company', 'text', 'Company'));
+    grid.appendChild(makeField('Company Tax Number', 'tax_number', 'text', 'Tax Number'));
+    grid.appendChild(makeField('Full name', 'full_name', 'text', 'Full name'));
+    grid.appendChild(makeField('Street and house number', 'address', 'text', 'Street and house number'));
+    grid.appendChild(makeField('Postal code and city', 'postal_city', 'text', 'Postal code and city'));
+    grid.appendChild(makeField('Email', 'email', 'email', 'Email', true));
+    grid.appendChild(makeField('Contact phone number', 'phone', 'tel', 'Contact phone number', true));
+
+    formWrap.appendChild(grid);
+
+    // spacer
+    formWrap.appendChild(ce('div', ns + '-hr'));
+
+    // Device fields
+    const deviceRow = ce('div', ns + '-row');
+    deviceRow.appendChild(makeField('Device manufacturer and model', 'device_model', 'text', 'Manufacturer and model', true));
+    deviceRow.appendChild(makeField('IMEI/Serial number', 'imei', 'text', 'IMEI/Serial number'));
+    formWrap.appendChild(deviceRow);
+
+    // radios groups row (three groups)
+    const radiosRow = ce('div', ns + '-row');
+    const makeRadioGroup = (labelText, name, opts) => {
+      const wrap = ce('div', ns + '-col');
+      const lab = ce('label'); lab.innerText = labelText; wrap.appendChild(lab);
+      const inner = ce('div'); inner.style.display = 'flex'; inner.style.gap = '12px';
+      opts.forEach(o => {
+        const lbl = ce('label'); lbl.style.fontWeight = '600';
+        const r = ce('input'); r.type = 'radio'; r.name = name; r.value = o.value;
+        lbl.appendChild(r); lbl.appendChild(document.createTextNode(' ' + o.label));
+        inner.appendChild(lbl);
       });
-    } catch (err) {
-      console.error('fetchRepairs failed', err);
-      return [];
+      wrap.appendChild(inner); return wrap;
+    };
+    radiosRow.appendChild(makeRadioGroup('Type of repair (check as appropriate)', 'repair_type', [{ value: 'warranty', label: 'Warranty' }, { value: 'out', label: 'Out of warranty' }]));
+    radiosRow.appendChild(makeRadioGroup('Completed warranty card', 'warranty_card', [{ value: 'YES', label: 'DA' }, { value: 'NO', label: 'NE' }]));
+    radiosRow.appendChild(makeRadioGroup('Invoice with IMEI/Serial number', 'receipt', [{ value: 'YES', label: 'DA' }, { value: 'NO', label: 'NE' }]));
+    formWrap.appendChild(radiosRow);
+
+    // note text
+    const note = ce('div'); note.className = ns + '-muted'; note.style.margin = '12px 0';
+    note.innerHTML = `<small><b>Note:</b> Data transfer is an additional paid service... (you can replace this text in admin later)</small>`;
+    formWrap.appendChild(note);
+
+    // PIN + pattern row
+    const pinRow = ce('div', ns + '-row');
+    const pinCol = ce('div', ns + '-col'); pinCol.appendChild(makeField('PIN', 'pin', 'text', 'PIN'));
+    const patCol = ce('div', ns + '-col');
+    const patLabel = ce('label'); patLabel.innerText = 'Pattern'; patCol.appendChild(patLabel);
+    const patBox = ce('div'); patBox.style.width = '150px'; patBox.style.height = '150px'; patBox.style.border = '2px dashed #d0d6dd'; patBox.style.borderRadius = '8px'; patBox.style.display = 'flex'; patBox.style.alignItems = 'center'; patBox.style.justifyContent = 'center';
+    patBox.innerHTML = '<div class="' + ns + '-muted">pattern</div>'; patCol.appendChild(patBox);
+    pinRow.appendChild(pinCol); pinRow.appendChild(patCol);
+    formWrap.appendChild(pinRow);
+
+    // Service type (select)
+    const serviceRow = ce('div', ns + '-row');
+    const serviceCol = ce('div', ns + '-col');
+    const serviceLab = ce('label'); serviceLab.innerText = 'How to get to the Service';
+    const serviceSel = ce('select'); serviceSel.name = 'service_type';
+    ['Personal delivery', 'Shipping'].forEach(v => { const o = document.createElement('option'); o.value = v; o.innerText = v; serviceSel.appendChild(o); });
+    serviceCol.appendChild(serviceLab); serviceCol.appendChild(serviceSel);
+    formWrap.appendChild(serviceRow); serviceRow.appendChild(serviceCol);
+
+    // Description
+    formWrap.appendChild(ce('div', ns + '-hr'));
+    const descCol = ce('div'); descCol.appendChild(makeField('Opis napake / Error description', 'body', 'textarea', 'Opis napake'));
+    formWrap.appendChild(descCol);
+
+    // Big note (terms) and signature
+    const terms = ce('div'); terms.className = ns + '-muted'; terms.style.margin = '12px 0'; terms.innerHTML = '<small><b>Note:</b> For warranty repairs it is mandatory to attach ...</small>';
+    formWrap.appendChild(terms);
+
+    const signRow = ce('div', ns + '-row');
+    signRow.appendChild(makeField('Signature', 'signature', 'text', 'Signature'));
+    formWrap.appendChild(signRow);
+
+    // submit
+    const submitRow = ce('div'); submitRow.style.textAlign = 'left'; submitRow.style.marginTop = '16px';
+    const btn = ce('button'); btn.className = ns + '-btn'; btn.innerText = 'Request repair';
+    btn.onclick = onSubmit;
+    submitRow.appendChild(btn);
+    formWrap.appendChild(submitRow);
+
+    // populate some default values
+    // set hidden fields for category/model/repair
+    formWrap.dataset.category = state.selectedCategory ? state.selectedCategory.slug : '';
+    formWrap.dataset.series = state.selectedSeries ? (state.selectedSeries._id || '') : '';
+    formWrap.dataset.modelId = state.selectedModel ? (state.selectedModel._id || '') : '';
+    formWrap.dataset.repairCode = state.selectedRepair ? (state.selectedRepair.code || '') : '';
+
+    // update summary price text
+    const priceEl = q('.' + ns + '-summaryPrice', formWrap);
+    if (priceEl) priceEl.innerText = (state.price ? money(state.price) : 'Pokličite za ceno');
+  }
+
+  // ---- compute effective price using precedence: model override > repair.basePrice > CALL_FOR_PRICE
+  function computeEffectivePrice() {
+    let price = null;
+    const r = state.selectedRepair;
+    if (!r) { state.price = null; updatePriceCard(); return; }
+    // try model override
+    if (state.selectedModel && state.selectedModel.priceOverrides && Array.isArray(state.selectedModel.priceOverrides)) {
+      const ov = state.selectedModel.priceOverrides.find(o => (o.repairOptionCode && (o.repairOptionCode === r.code)) || (o.repairOptionId && String(o.repairOptionId) === String(r._id)));
+      if (ov && (ov.price !== undefined && ov.price !== null)) price = ov.price;
+    }
+    // fallback to repair.basePrice
+    if (price === null || price === undefined) {
+      if (r.priceEffective !== undefined) price = r.priceEffective;
+      else if (r.basePrice !== undefined && r.basePrice !== null) price = r.basePrice;
+    }
+    state.price = price || null;
+    updatePriceCard();
+  }
+  function updatePriceCard() {
+    const pEls = document.getElementsByClassName(ns + '-summaryPrice');
+    for (let i = 0; i < pEls.length; i++) {
+      pEls[i].innerText = state.price ? money(state.price) : 'Pokličite za ceno';
     }
   }
 
-  // initial load
+  // ---- loaders ----
+  function loadCategories() {
+    apiGET('/api/categories').then(list => {
+      state.categories = list || [];
+      renderCategories();
+    }).catch(err => {
+      console.error('categories err', err);
+      categoryGrid.innerText = 'Failed to load categories';
+    });
+  }
+
+  function loadSeries(category) {
+    // try GET /api/series filtered server-side if available; otherwise we can call /api/series and filter client-side
+    apiGET('/api/series').then(list => {
+      // filter by category if series has "category" property
+      const filtered = (list || []).filter(s => {
+        if (!category) return true;
+        if (!s.category) return true;
+        // category may be stored as slug or id — accept either
+        return s.category === category.slug || s.category === category._id || (s.category && s.category._id === category._id);
+      });
+      state.series = filtered;
+      renderSeries(filtered);
+    }).catch(err => {
+      console.error('series err', err);
+      seriesGrid.innerText = 'Failed to load series';
+    });
+  }
+
+  function loadModelsForSeries(seriesId) {
+    if (!seriesId) return;
+    apiGET('/api/series/' + encodeURIComponent(seriesId) + '/models').then(list => {
+      state.models = list || [];
+      // show model pill drop-in: if many models, show the select modal — for simplicity use a native select dropdown inside a small modal-like area
+      // Build a select dropdown in place of pill
+      const select = ce('select'); select.style.width = '360px'; select.style.padding = '12px 18px'; select.style.borderRadius = '40px'; select.style.border = '2px solid #121212';
+      const emptyOpt = ce('option'); emptyOpt.value = ''; emptyOpt.innerText = 'Bitte wählen…'; select.appendChild(emptyOpt);
+      list.forEach(m => {
+        const o = ce('option'); o.value = m._id || m.slug || m.name; o.innerText = m.name; select.appendChild(o);
+      });
+      clearChildren(modelWrap); modelWrap.appendChild(select);
+      select.onchange = () => {
+        const id = select.value;
+        const model = list.find(x => x._id === id || x.slug === id) || null;
+        state.selectedModel = model;
+        renderModelsPill(model);
+        // load repairs for model
+        loadRepairsForModel(model ? (model._id || model.slug) : null);
+      };
+      select.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }).catch(err => {
+      console.error('models for series err', err);
+      modelWrap.innerText = 'Failed to load models';
+    });
+  }
+
+  function loadRepairsForModel(modelId) {
+    if (!modelId) return;
+    apiGET('/api/repairs?modelId=' + encodeURIComponent(modelId)).then(list => {
+      // ensure repairs have code/name
+      state.repairs = list || [];
+      renderRepairs(state.repairs);
+    }).catch(err => {
+      console.error('repairs err', err);
+      damageGrid.innerText = 'Failed to load repairs';
+    });
+  }
+
+  // ---- submit handler ----
+  function collectFormData() {
+    const inputs = formWrap.querySelectorAll('input, textarea, select');
+    const contact = {};
+    inputs.forEach(i => {
+      const name = i.name;
+      if (!name) return;
+      if (i.type === 'radio') {
+        if (!contact[name]) {
+          // pick checked
+          const c = formWrap.querySelector('input[name="' + name + '"]:checked');
+          contact[name] = c ? c.value : '';
+        }
+      } else {
+        contact[name] = i.value;
+      }
+    });
+    return {
+      contact,
+      category: state.selectedCategory ? state.selectedCategory.slug : '',
+      seriesId: state.selectedSeries ? (state.selectedSeries._id || '') : '',
+      modelId: state.selectedModel ? (state.selectedModel._id || '') : '',
+      repair_code: state.selectedRepair ? (state.selectedRepair.code || state.selectedRepair._id) : '',
+      metadata: {
+        priceComputed: state.price,
+        widgetAt: window.location.href
+      }
+    };
+  }
+
+  function validateForm() {
+    // check required fields (data-required attr)
+    let ok = true;
+    const required = formWrap.querySelectorAll('[data-required="1"]');
+    required.forEach(r => {
+      if (!r.value || r.value.trim() === '') {
+        ok = false;
+        r.style.borderColor = 'red';
+      } else {
+        r.style.borderColor = '';
+      }
+    });
+    if (!state.selectedModel) {
+      ok = false;
+      alert('Please select a model.');
+    }
+    if (!state.selectedRepair) {
+      ok = false;
+      alert('Please select a repair type.');
+    }
+    return ok;
+  }
+
+  function onSubmit(evt) {
+    if (!validateForm()) return;
+    const payload = collectFormData();
+    // disable button and show loading
+    const btn = formWrap.querySelector('.' + ns + '-btn');
+    btn.disabled = true; btn.innerText = 'Sending...';
+    apiPOST('/api/submit', payload).then(res => {
+      btn.disabled = false; btn.innerText = 'Request repair';
+      // show confirmation
+      clearChildren(mount);
+      const okWrap = ce('div', ns + '-center'); okWrap.style.padding = '30px 10px';
+      const title = ce('h2'); title.innerText = 'Thank you — request received';
+      const p = ce('p'); p.className = ns + '-muted'; p.innerHTML = `We created request <strong>${res.id || res._id || '—'}</strong>. Price: <strong>${res.price ? (Number.isInteger(res.price) ? (res.price/100).toLocaleString() + ' €' : String(res.price)) : 'CALL_FOR_PRICE'}</strong>`;
+      okWrap.appendChild(title); okWrap.appendChild(p);
+      mount.appendChild(okWrap);
+    }).catch(err => {
+      btn.disabled = false; btn.innerText = 'Request repair';
+      console.error('submit err', err);
+      alert('Submission failed: ' + (err && err.error ? err.error : (err && err.message ? err.message : 'Unknown error')));
+    });
+  }
+
+  // ---- init ----
   loadCategories();
 
-  // Expose for debugging
-  window.RAM_WIDGET = { state, reload: loadCategories, API_ROOT };
 })();
