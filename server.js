@@ -14,6 +14,13 @@ const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
+// serve embeddable widget
+app.get('/widget.js', (req, res) => {
+  res.type('application/javascript');
+  res.sendFile(path.join(__dirname, 'widget-example.js'));
+});
+
+
 // Basic health
 app.get('/_health', (req, res) => res.json({ok:true}));
 
