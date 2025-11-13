@@ -1,0 +1,10 @@
+<!-- ram-service-widget.liquid - single line to include in theme -->
+<div id="ram-service-widget"></div>
+<script>
+  (function(){
+    var s = document.createElement('script');
+    s.src = '{{ "https://YOUR_APP_URL/widget.js" }}';
+    s.async = true;
+    document.getElementById('ram-service-widget').appendChild(s);
+  })();
+</script>

@@ -1,0 +1,52 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>RAM Service Admin</title></head>
+<body>
+  <div id="root"></div>
+  <script type="module">
+    // Minimal admin single-file app to create categories/models/repairs
+    const API = prompt('Enter admin API base URL (e.g. https://your-app):');
+    const ADMIN_PASSWORD = prompt('Enter admin password:');
+    async function post(path, body){
+      const res = await fetch(API + path, {
+        method:'POST',
+        headers:{'Content-Type':'application/json','x-admin-password':ADMIN_PASSWORD},
+        body: JSON.stringify(body)
+      });
+      return res.json();
+    }
+    // Very minimal UI
+    document.getElementById('root').innerHTML = `
+      <h1>RAM Service Admin (minimal)</h1>
+      <div>
+        <h2>Create Category</h2>
+        <input id="cat-name" placeholder="Name"><input id="cat-slug" placeholder="slug"><button id="cat-btn">Create</button>
+      </div>
+      <div>
+        <h2>Create Model</h2>
+        <input id="m-name" placeholder="Model name"><input id="m-category" placeholder="category slug"><input id="m-image" placeholder="imageUrl"><button id="mod-btn">Create</button>
+      </div>
+      <div>
+        <h2>Create Repair</h2>
+        <input id="r-code" placeholder="code"><input id="r-name" placeholder="name"><input id="r-price" placeholder="basePrice"><button id="rep-btn">Create</button>
+      </div>
+      <div id="out"></div>
+    `;
+    document.getElementById('cat-btn').onclick = async ()=>{
+      const name = document.getElementById('cat-name').value, slug = document.getElementById('cat-slug').value;
+      const res = await post('/admin/category', {name, slug});
+      document.getElementById('out').innerText = JSON.stringify(res, null, 2);
+    };
+    document.getElementById('mod-btn').onclick = async ()=>{
+      const name = document.getElementById('m-name').value, category = document.getElementById('m-category').value, imageUrl = document.getElementById('m-image').value;
+      const res = await post('/admin/model', {name, category, imageUrl});
+      document.getElementById('out').innerText = JSON.stringify(res, null, 2);
+    };
+    document.getElementById('rep-btn').onclick = async ()=>{
+      const code = document.getElementById('r-code').value, name = document.getElementById('r-name').value, basePrice = document.getElementById('r-price').value;
+      const res = await post('/admin/repair', {code, name, basePrice});
+      document.getElementById('out').innerText = JSON.stringify(res, null, 2);
+    };
+  </script>
+</body>
+</html>
