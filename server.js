@@ -71,6 +71,34 @@ app.get('/api/repairs', async (req, res) => {
   res.json(repairs);
 });
 
+// GET all series (optionally filter by category slug or id via ?category=slugOrId)
+app.get('/api/series', async (req, res) => {
+  try {
+    const filter = {};
+    if (req.query.category) {
+      // allow category slug or ObjectId
+      filter.category = req.query.category;
+    }
+    const list = await require('./models/Series').find(filter).sort({ order: 1 });
+    res.json(list);
+  } catch (err) {
+    console.error('series error', err);
+    res.status(500).json({ error: 'Series load failed' });
+  }
+});
+
+// GET models for a series (returns models where series matches seriesId)
+app.get('/api/series/:seriesId/models', async (req, res) => {
+  try {
+    const { seriesId } = req.params;
+    const models = await DeviceModel.find({ series: seriesId }).sort({ brand: 1, name: 1 });
+    res.json(models);
+  } catch (err) {
+    console.error('series models error', err);
+    res.status(500).json({ error: 'Models for series failed' });
+  }
+});
+
 // Admin simple password auth
 function adminAuth(req, res, next) {
   const pass = req.headers['x-admin-password'] || req.query.admin_password;
