@@ -1,268 +1,291 @@
-// widget-example.js
-(function(){
-  function el(tag, txt, className){
-    const e = document.createElement(tag);
-    if (txt) e.innerText = txt;
-    if (className) e.className = className;
-    return e;
-  }
+// widget-example.js (embeddable - keep small & self-contained)
+(function () {
+  // safe small helper
+  function qs(sel, parent){ return (parent||document).querySelector(sel); }
+  function ce(tag, txt){ const e=document.createElement(tag); if(txt) e.innerText=txt; return e; }
+  function qsa(sel, parent){ return Array.from((parent||document).querySelectorAll(sel)); }
+
+  // determine API base: prefer explicitly set global, otherwise derive from this script tag src
+  (function ensureApiBase(){
+    if (window.RAM_SERVICE_API_BASE) return;
+    // try to find this script's src
+    const scripts = document.getElementsByTagName('script');
+    for (let i=0;i<scripts.length;i++){
+      const s = scripts[i];
+      if (s.src && s.src.indexOf('widget.js') !== -1) {
+        const base = s.src.replace(/\/widget\.js.*$/,'');
+        window.RAM_SERVICE_API_BASE = base;
+        return;
+      }
+    }
+    // fallback to current origin
+    window.RAM_SERVICE_API_BASE = (location.protocol + '//' + location.host);
+  })();
+
   async function api(path){
-    const base = window.RAM_SERVICE_API_BASE || '';
-    const url = (base + path).replace(/\/+/g, '/').replace('http:/','http://').replace('https:/','https://');
-    // if base is full origin it will be fine; otherwise relative
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-    return res.json();
+    const url = window.RAM_SERVICE_API_BASE.replace(/\/$/,'') + path;
+    const r = await fetch(url);
+    if (!r.ok) throw new Error('API fetch failed: ' + url + ' status:' + r.status);
+    return r.json();
   }
 
-  const mount = document.getElementById('ram-service-widget');
+  // render helpers
+  function clearMount(m) { while (m.firstChild) m.removeChild(m.firstChild); }
+  function mountMessage(m, txt){ const p = ce('div', txt); p.style.padding='18px 0'; p.style.textAlign='center'; m.appendChild(p); }
+
+  // mount point
+  let mount = document.getElementById('ram-service-widget');
   if (!mount) {
-    console.warn('ram-service-widget not found; creating one at document.body');
-    const m = document.createElement('div');
-    m.id = 'ram-service-widget';
-    document.body.appendChild(m);
+    mount = document.createElement('div');
+    mount.id = 'ram-service-widget';
+    document.body.appendChild(mount);
+  }
+  // basic styles
+  const styleId = 'ram-service-widget-style';
+  if (!document.getElementById(styleId)) {
+    const style = document.createElement('style');
+    style.id = styleId;
+    style.innerHTML = `
+      #ram-service-widget { max-width: 1100px; margin: 36px auto; font-family: Arial, Helvetica, sans-serif; color:#222; }
+      #ram-service-widget h3 { text-align:center; font-size:28px; margin:10px 0 24px; }
+      #ram-service-widget .grid { display:flex; gap:18px; flex-wrap:wrap; justify-content:center; }
+      #ram-service-widget .card { width:220px; height:160px; background:#eef4fb; border-radius:10px; display:flex; align-items:center; justify-content:center; text-align:center; cursor:pointer; padding:14px; box-shadow:0 2px 0 rgba(0,0,0,0.03); }
+      #ram-service-widget .card.selected { background:#cfd8e6; }
+      #ram-service-widget .btn { display:inline-block; padding:12px 22px; border-radius:28px; border:2px solid #111; background:white; cursor:pointer; }
+      #ram-service-widget .select { display:block; width:360px; margin: 8px auto 24px; padding:12px 18px; border-radius:28px; border:2px solid #111; background:white; }
+      #ram-service-widget .repairs { display:flex; gap:14px; flex-wrap:wrap; justify-content:center; margin-top:18px; }
+      #ram-service-widget .repair-card { width:220px; height:120px; background:#eef4fb; border-radius:10px; padding:12px; text-align:center; cursor:pointer; }
+      #ram-service-widget .price-box { margin-top:18px; padding:18px; background:#eef4fb; border-radius:10px; text-align:center; }
+      #ram-service-widget form { margin-top:20px; padding:18px; border-radius:10px; background:#f6fbff; }
+      #ram-service-widget form input, #ram-service-widget form textarea { width:100%; padding:10px; margin:8px 0; border-radius:8px; border:1px solid #ccc; }
+    `;
+    document.head.appendChild(style);
   }
 
-  const container = document.createElement('div');
-  container.style.maxWidth = '1100px';
-  container.style.margin = '40px auto';
-  container.style.fontFamily = 'Arial, Helvetica, sans-serif';
-  mount.appendChild(container);
+  // UI building
+  clearMount(mount);
+  mount.appendChild(ce('h3','Select device category'));
 
-  const title = el('h2','Select device category');
-  title.style.textAlign = 'center';
-  container.appendChild(title);
+  const catContainer = ce('div'); catContainer.className='grid'; mount.appendChild(catContainer);
+  mountMessage(mount, 'Loading categories...');
 
-  const status = el('div','Loading categories...');
-  status.style.textAlign = 'center';
-  status.style.marginBottom = '18px';
-  container.appendChild(status);
+  // state
+  const state = { category: null, series: null, model: null, repair: null };
 
-  // get categories and render simple grid
-  api('/api/categories').then(cats=>{
-    status.innerText = ''; // clear
-    if (!Array.isArray(cats) || cats.length === 0) {
-      status.innerText = 'No categories found';
-      return;
-    }
-    const grid = el('div');
-    grid.style.display = 'flex';
-    grid.style.gap = '18px';
-    grid.style.justifyContent = 'center';
-    grid.style.flexWrap = 'wrap';
-    container.appendChild(grid);
-
-    cats.forEach(c=>{
-      const card = el('button','');
-      card.style.width = '220px';
-      card.style.height = '140px';
-      card.style.borderRadius = '12px';
-      card.style.border = '1px solid #ddd';
-      card.style.background = '#eef6ff';
-      card.style.cursor = 'pointer';
-      card.style.display = 'flex';
-      card.style.flexDirection = 'column';
-      card.style.alignItems = 'center';
-      card.style.justifyContent = 'center';
-      card.style.padding = '12px';
-      card.innerText = c.name || c.slug || 'Category';
-      card.onclick = () => onCategorySelected(c);
-      grid.appendChild(card);
-    });
-  }).catch(err=>{
-    status.innerText = `Failed to load categories — check API base and CORS. ${err.message}`;
-    console.error('widget categories error', err);
-  });
-
-  let selected = { category: null, series: null, model: null, repair: null };
-
-  function clearBelow(node) {
-    // remove nodes after the supplied node in container
-    while (container.lastChild && container.lastChild !== node) {
-      container.removeChild(container.lastChild);
-    }
-  }
-
+  // listeners helpers
   function onCategorySelected(c) {
-    selected.category = c;
-    // show selected state
-    const sel = el('div', `Selected category: ${c.name}`);
-    sel.style.textAlign = 'center';
-    sel.style.marginTop = '18px';
-    container.appendChild(sel);
+    state.category = c;
+    // highlight selection
+    qsa('#ram-service-widget .card').forEach(el => el.classList.remove('selected'));
+    const el = document.querySelector(`#ram-service-widget .card[data-cat='${c._id}']`);
+    if (el) el.classList.add('selected');
 
-    // load series for the category
-    const sTitle = el('h3', 'Select Series');
-    sTitle.style.textAlign = 'center';
-    container.appendChild(sTitle);
+    // load series for category
+    loadSeries(c);
+  }
 
-    const seriesWrap = el('div');
-    seriesWrap.style.display = 'flex';
-    seriesWrap.style.gap = '12px';
-    seriesWrap.style.justifyContent = 'center';
-    container.appendChild(seriesWrap);
+  function onSeriesSelected(s) {
+    state.series = s;
+    qsa('#ram-service-widget .card.series').forEach(el => el.classList.remove('selected'));
+    const el = document.querySelector(`#ram-service-widget .card.series[data-series='${s._id}']`);
+    if (el) el.classList.add('selected');
 
-    api(`/api/series?category=${encodeURIComponent(c.slug || c._id)}`).then(seriesList=>{
-      if (!Array.isArray(seriesList) || seriesList.length === 0) {
-        seriesWrap.appendChild(el('div','No series found'));
+    // load models for series
+    loadModelsForSeries(s);
+  }
+
+  function onModelSelected(m) {
+    state.model = m;
+    // update selected UI (if using select)
+    const sel = qs('#ram-service-widget select.model-select');
+    if (sel) sel.value = m._id;
+    // load repairs for model
+    loadRepairs(m);
+  }
+
+  function onRepairSelected(r) {
+    state.repair = r;
+    qsa('#ram-service-widget .repair-card').forEach(el => el.classList.remove('selected'));
+    const el = document.querySelector(`#ram-service-widget .repair-card[data-repair='${r.code}']`);
+    if (el) el.classList.add('selected');
+    // show price
+    showPrice(r);
+    // show form
+    showForm();
+  }
+
+  // API load functions
+  async function loadCategories(){
+    try {
+      const cats = await api('/api/categories');
+      catContainer.innerHTML = '';
+      if (!cats || cats.length === 0) { mountMessage(mount,'No categories found'); return; }
+      cats.forEach(c => {
+        const b = ce('div'); b.className='card'; b.dataset.cat = c._id;
+        b.innerHTML = `<div><strong>${c.name}</strong></div>`;
+        b.onclick = ()=> onCategorySelected(c);
+        catContainer.appendChild(b);
+      });
+      // clear any loading message
+      const msgs = qsa('#ram-service-widget > div');
+      // proceed auto-select first (optional)
+      // onCategorySelected(cats[0]);
+    } catch (err) {
+      clearMount(mount);
+      mount.appendChild(ce('h3','Select device category'));
+      mountMessage(mount, 'Failed to load categories — check API base and CORS (' + (window.RAM_SERVICE_API_BASE + '/api/categories') + ')');
+      console.error(err);
+    }
+  }
+
+  async function loadSeries(category) {
+    // remove previous series area
+    // create series section below categories
+    let seriesSection = qs('#ram-service-widget .series-section');
+    if (!seriesSection) {
+      seriesSection = ce('div'); seriesSection.className='series-section';
+      seriesSection.appendChild(ce('h3','Select Series'));
+      const sgrid = ce('div'); sgrid.className='grid'; sgrid.style.marginTop='8px';
+      seriesSection.appendChild(sgrid);
+      mount.appendChild(seriesSection);
+    }
+    const sgrid = qs('#ram-service-widget .series-section .grid');
+    sgrid.innerHTML = '';
+    mountMessage(mount, 'Loading series...');
+    try {
+      const list = await api('/api/series?category=' + encodeURIComponent(category._id));
+      if (!list || list.length === 0) {
+        mountMessage(mount, 'No series for this category');
         return;
       }
-      seriesList.forEach(s=>{
-        const b = el('button', s.name || s.slug);
-        b.style.width = '200px';
-        b.style.height = '120px';
-        b.style.borderRadius = '10px';
+      list.forEach(s => {
+        const b = ce('div'); b.className='card series'; b.dataset.series = s._id;
+        b.innerHTML = `<div><strong>${s.name}</strong></div>`;
         b.onclick = ()=> onSeriesSelected(s);
-        seriesWrap.appendChild(b);
+        sgrid.appendChild(b);
       });
-    }).catch(err=>{
-      seriesWrap.appendChild(el('div','Failed to load series: ' + err.message));
-      console.error('widget series error', err);
-    });
+      mountMessage(mount, 'Select a model from the list');
+    } catch (err) {
+      console.error(err);
+      mountMessage(mount, 'Failed to load series');
+    }
   }
 
-  function onSeriesSelected(series) {
-    selected.series = series;
-    // remove everything after series area and load models
-    clearBelow(container.querySelector('h3') || container.firstChild);
-    const mTitle = el('h3', 'Select a model from the list');
-    mTitle.style.textAlign = 'center';
-    container.appendChild(mTitle);
-
-    const modelSelect = el('div');
-    modelSelect.style.display = 'flex';
-    modelSelect.style.gap = '12px';
-    modelSelect.style.justifyContent = 'center';
-    modelSelect.style.flexWrap = 'wrap';
-    container.appendChild(modelSelect);
-
-    api(`/api/series/${encodeURIComponent(series._id)}/models`).then(models=>{
-      if (!Array.isArray(models) || models.length === 0) {
-        modelSelect.appendChild(el('div','No models found'));
+  async function loadModelsForSeries(series) {
+    // render a select and/or grid of models
+    // create model select
+    let modelArea = qs('#ram-service-widget .model-area');
+    if (!modelArea) {
+      modelArea = ce('div'); modelArea.className='model-area';
+      modelArea.appendChild(ce('h3','Select a model from the list'));
+      const sel = document.createElement('select'); sel.className='select model-select';
+      sel.onchange = async function(){ const id = this.value; if(!id) return; const models = await api('/api/models?series=' + id); if(models && models[0]) onModelSelected(models[0]); };
+      modelArea.appendChild(sel);
+      mount.appendChild(modelArea);
+    }
+    const sel = qs('#ram-service-widget select.model-select');
+    sel.innerHTML = '<option value="">Please choose...</option>';
+    mountMessage(mount, 'Loading models...');
+    try {
+      const models = await api('/api/series/' + encodeURIComponent(series._id) + '/models');
+      if (!models || models.length === 0) {
+        mountMessage(mount, 'No models for this series');
         return;
       }
-      models.forEach(m=>{
-        const card = el('button', m.name || m.slug);
-        card.style.width = '280px';
-        card.style.height = '70px';
-        card.onclick = ()=> onModelSelected(m);
-        modelSelect.appendChild(card);
+      models.forEach(m => {
+        const opt = document.createElement('option'); opt.value = m._id; opt.text = (m.name + (m.sku ? ' - ' + m.sku : ''));
+        sel.appendChild(opt);
       });
-    }).catch(err=>{
-      modelSelect.appendChild(el('div','Failed to load models: ' + err.message));
-      console.error('widget models error', err);
-    });
+      // auto-select first model for faster flow (optional)
+      // onModelSelected(models[0]);
+      mountMessage(mount, 'Select type of injury');
+    } catch (err) {
+      console.error(err);
+      mountMessage(mount, 'Failed to load models');
+    }
   }
 
-  function onModelSelected(model) {
-    selected.model = model;
-    // clear beneath model area
-    clearBelow(container.querySelector('div[style*="flex-wrap"]') || container.firstChild);
-    const title = el('h3', 'Select type of injury');
-    title.style.textAlign = 'center';
-    container.appendChild(title);
-
-    const repairsWrap = el('div');
-    repairsWrap.style.display = 'flex';
-    repairsWrap.style.flexWrap = 'wrap';
-    repairsWrap.style.gap = '14px';
-    repairsWrap.style.justifyContent = 'center';
-    container.appendChild(repairsWrap);
-
-    api(`/api/repairs?modelId=${encodeURIComponent(model._id)}`).then(repairs=>{
-      if (!Array.isArray(repairs) || repairs.length === 0) {
-        repairsWrap.appendChild(el('div','No repair options'));
+  async function loadRepairs(model) {
+    // show repairs grid
+    let repairsSection = qs('#ram-service-widget .repairs-section');
+    if (!repairsSection) {
+      repairsSection = ce('div'); repairsSection.className='repairs-section';
+      repairsSection.appendChild(ce('h3','Select type of injury'));
+      const box = ce('div'); box.className='repairs'; repairsSection.appendChild(box);
+      mount.appendChild(repairsSection);
+    }
+    const box = qs('#ram-service-widget .repairs');
+    box.innerHTML = '';
+    mountMessage(mount, 'Loading repair options...');
+    try {
+      const repairs = await api('/api/repairs?modelId=' + encodeURIComponent(model._id));
+      if (!repairs || repairs.length === 0) {
+        mountMessage(mount, 'No repair options');
         return;
       }
-      repairs.forEach(r=>{
-        const b = el('button', `${r.name} — ${r.priceEffective || ''}`);
-        b.style.minWidth = '220px';
-        b.style.height = '110px';
-        b.onclick = ()=> onRepairSelected(r);
-        repairsWrap.appendChild(b);
+      repairs.forEach(r => {
+        const c = ce('div'); c.className='repair-card'; c.dataset.repair = r.code;
+        c.innerHTML = `<div><strong>${r.name}</strong><div style="font-size:12px;margin-top:6px;">${r.priceEffective ? ('Price: ' + r.priceEffective) : ''}</div></div>`;
+        c.onclick = ()=> onRepairSelected(r);
+        box.appendChild(c);
       });
-    }).catch(err=>{
-      repairsWrap.appendChild(el('div','Failed to load repairs: ' + err.message));
-      console.error('widget repairs error', err);
-    });
+      mountMessage(mount, '');
+    } catch (err) {
+      console.error(err);
+      mountMessage(mount,'Failed to load repairs');
+    }
   }
 
-  function onRepairSelected(repair) {
-    selected.repair = repair;
-    // show summary and form
-    clearBelow(container.querySelector('h3') || container.firstChild);
-    const summary = el('div', `Selected: ${selected.category.name} > ${selected.series.name} > ${selected.model.name} > ${repair.name}`);
-    summary.style.textAlign = 'center';
-    summary.style.margin = '10px 0 20px';
-    container.appendChild(summary);
+  function showPrice(r) {
+    let p = qs('#ram-service-widget .price-box');
+    if (!p) { p = ce('div'); p.className='price-box'; mount.appendChild(p); }
+    p.innerHTML = `<div><strong>${r.name}</strong></div><div style="margin-top:8px;">Your price: <strong>${r.priceEffective || 'CALL_FOR_PRICE'}</strong></div>`;
+  }
 
-    const priceBox = el('div', `Estimated price: ${repair.priceEffective || 'CALL_FOR_PRICE'}`);
-    priceBox.style.textAlign = 'center';
-    priceBox.style.marginBottom = '12px';
-    container.appendChild(priceBox);
-
-    // small form: name + email + phone + submit
-    const form = document.createElement('form');
-    form.style.maxWidth = '700px';
-    form.style.margin = '0 auto';
-    form.style.display = 'grid';
-    form.style.gridTemplateColumns = '1fr';
-    form.style.gap = '8px';
-
-    const nameIn = document.createElement('input');
-    nameIn.placeholder = 'Full name';
-    nameIn.required = true;
-    form.appendChild(nameIn);
-
-    const emailIn = document.createElement('input');
-    emailIn.placeholder = 'Email';
-    emailIn.type = 'email';
-    emailIn.required = true;
-    form.appendChild(emailIn);
-
-    const phoneIn = document.createElement('input');
-    phoneIn.placeholder = 'Phone';
-    form.appendChild(phoneIn);
-
-    const submitBtn = document.createElement('button');
-    submitBtn.type = 'submit';
-    submitBtn.innerText = 'Request repair';
-    submitBtn.style.padding = '10px';
-    form.appendChild(submitBtn);
-
-    const msg = el('div','');
-    msg.style.textAlign = 'center';
-    msg.style.marginTop = '8px';
-    container.appendChild(form);
-    container.appendChild(msg);
-
-    form.onsubmit = async (ev) => {
-      ev.preventDefault();
-      submitBtn.disabled = true;
-      msg.innerText = 'Submitting...';
+  function showForm() {
+    // simple contact form; adapt fields later to full form from screenshot
+    let f = qs('#ram-service-widget form');
+    if (f) return; // already shown
+    f = document.createElement('form');
+    f.innerHTML = `
+      <h4>Repair form</h4>
+      <label>Full name</label><input name="name" placeholder="Full name" required />
+      <label>Email</label><input name="email" placeholder="Email" required />
+      <label>Phone</label><input name="phone" placeholder="Phone" />
+      <label>Notes / error description</label><textarea name="notes" rows="4"></textarea>
+      <button type="submit" class="btn">Request repair</button>
+    `;
+    f.onsubmit = async function(e){
+      e.preventDefault();
+      const form = new FormData(f);
+      const payload = {
+        contact: { name: form.get('name'), email: form.get('email'), phone: form.get('phone') },
+        category: state.category ? state.category._id : null,
+        modelId: state.model ? state.model._id : null,
+        repair_code: state.repair ? state.repair.code : null,
+        metadata: { notes: form.get('notes') || '' }
+      };
       try {
-        const payload = {
-          contact: { name: nameIn.value, email: emailIn.value, phone: phoneIn.value },
-          category: selected.category.slug || selected.category._id,
-          modelId: selected.model._id,
-          repair_code: selected.repair.code,
-        };
-        const res = await fetch((window.RAM_SERVICE_API_BASE || '') + '/api/submit', {
-          method: 'POST',
-          headers: {'Content-Type':'application/json'},
+        const res = await fetch(window.RAM_SERVICE_API_BASE + '/api/submit', {
+          method:'POST',
+          headers: { 'Content-Type':'application/json' },
           body: JSON.stringify(payload)
         });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || JSON.stringify(data));
-        msg.innerText = `Request received — id: ${data.id} — price: ${data.price}`;
-        form.reset();
+        const json = await res.json();
+        if (json.ok) {
+          f.innerHTML = '<div>Request received — thank you. We will contact you shortly.</div>';
+        } else {
+          f.insertAdjacentHTML('afterbegin', '<div style="color:red;">Submit failed: '+ (json.error || JSON.stringify(json)) +'</div>');
+        }
       } catch (err) {
-        msg.innerText = 'Submit failed: ' + (err.message || err);
-        console.error('widget submit error', err);
-      } finally {
-        submitBtn.disabled = false;
+        console.error(err);
+        f.insertAdjacentHTML('afterbegin', '<div style="color:red;">Submit failed — check console</div>');
       }
     };
+    mount.appendChild(f);
   }
+
+  // initial load
+  loadCategories();
 
 })();
