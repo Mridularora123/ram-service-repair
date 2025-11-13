@@ -12,7 +12,8 @@
     "dotenv": "^16.6.1",
     "express": "^4.21.2",
     "helmet": "^8.1.0",
-    "mongoose": "^7.8.7"
+    "mongoose": "^7.8.7",
+    "morgan": "^1.10.1"
   },
   "engines": {
     "node": ">=18"
