@@ -1,73 +1,125 @@
-// server.js — final robust version
+// server.js
 require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
 const path = require('path');
+const bodyParser = require('body-parser');
 const cors = require('cors');
 
-const app = express();
-
-// try to require optional middleware but don't crash if not installed
-try { const helmet = require('helmet'); app.use(helmet()); } catch (e) { /* optional */ }
-try { const morgan = require('morgan'); app.use(morgan('dev')); } catch (e) { /* optional */ }
-
-app.use(cors({
-  origin: true, // allow requests from anywhere (for development). Restrict in production.
-  methods: ['GET','POST','OPTIONS'],
-  allowedHeaders: ['Content-Type','x-admin-password']
-}));
-app.use(express.json());
-
-// Models (assumes these files exist in ./models)
 const Category = require('./models/Category');
-const DeviceModel = require('./models/Model'); // file name Model.js exporting DeviceModel
+const DeviceModel = require('./models/Model');
 const RepairOption = require('./models/RepairOption');
 const ServiceRequest = require('./models/ServiceRequest');
 
-// Serve embeddable widget JS file
+const app = express();
+app.use(cors());
+app.use(bodyParser.json());
+
+// serve embeddable widget file directly (static JS)
 app.get('/widget.js', (req, res) => {
   res.type('application/javascript');
   res.sendFile(path.join(__dirname, 'widget-example.js'));
 });
 
-// small snippet (useful if you want to paste an embed snippet)
+// optional small embeddable snippet endpoint
+// returns a small JS snippet you can paste into Shopify custom liquid.
+// It references APP_URL from env (fallback to request host).
 app.get('/embed', (req, res) => {
+  // prefer APP_URL if set, otherwise build from request
   const envAppUrl = (process.env.APP_URL || '').replace(/\/$/, '');
   const host = envAppUrl || `${req.protocol}://${req.get('host')}`;
+  // script to inject widget.js from your host (no regex literals inside the string)
   const script = `<script>(function(){var s=document.createElement('script');s.src='${host}/widget.js';s.async=true;var mount=document.getElementById('ram-service-widget'); if(!mount){mount=document.createElement('div');mount.id='ram-service-widget';document.body.appendChild(mount);} mount.appendChild(s); })();</script>`;
-  res.type('text/html').send(script);
+  res.type('text/html');
+  res.send(script);
 });
 
-// health + root
+// simple health check
 app.get('/_health', (req, res) => res.json({ ok: true }));
-app.get('/', (req, res) => res.json({ ok: true, message: 'RAM service API running' }));
 
-// connect to mongo
+// Connect MongoDB
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/ram-service';
 mongoose.connect(MONGODB_URI, { useNewUrlParser: true, useUnifiedTopology: true })
-  .then(()=> console.log('MongoDB connected'))
+  .then(() => console.log('MongoDB connected'))
   .catch(err => console.error('MongoDB error', err));
 
-// PUBLIC API
-
-// GET categories
+// Public API: lists for frontend widget
 app.get('/api/categories', async (req, res) => {
+  const cats = await Category.find({}).sort({ order: 1 });
+  res.json(cats);
+});
+
+app.get('/api/models', async (req, res) => {
+  const filter = {};
+  if (req.query.category) filter.category = req.query.category;
+  const models = await DeviceModel.find(filter).sort({ brand: 1, name: 1 });
+  res.json(models);
+});
+
+app.get('/api/repairs', async (req, res) => {
   try {
-    const cats = await Category.find({}).sort({ order: 1 });
-    res.json(cats);
+    const modelId = req.query.modelId;
+    let repairs = await RepairOption.find({}).lean();
+
+    if (modelId) {
+      const model = await DeviceModel.findById(modelId).lean();
+      if (model) {
+        // priceOverrides is an array of { repairOptionId, repairOptionCode, price }
+        repairs = repairs.map(r => {
+          const obj = { ...r };
+          // find override by repairOptionId (ObjectId string) OR by repairOptionCode
+          let overrideEntry = null;
+          if (Array.isArray(model.priceOverrides)) {
+            overrideEntry = model.priceOverrides.find(po => {
+              if (po.repairOptionId && String(po.repairOptionId) === String(r._id)) return true;
+              if (po.repairOptionCode && po.repairOptionCode === r.code) return true;
+              return false;
+            });
+          }
+          if (overrideEntry && typeof overrideEntry.price !== 'undefined' && overrideEntry.price !== null) {
+            obj.priceEffective = overrideEntry.price;
+          } else {
+            obj.priceEffective = (r.basePrice !== undefined && r.basePrice !== null) ? r.basePrice : 'CALL_FOR_PRICE';
+          }
+          return obj;
+        });
+      } else {
+        // modelId passed but not found — leave repairs with basePrice
+        repairs = repairs.map(r => ({ ...r, priceEffective: (r.basePrice !== undefined && r.basePrice !== null) ? r.basePrice : 'CALL_FOR_PRICE' }));
+      }
+    } else {
+      repairs = repairs.map(r => ({ ...r, priceEffective: (r.basePrice !== undefined && r.basePrice !== null) ? r.basePrice : 'CALL_FOR_PRICE' }));
+    }
+
+    res.json(repairs);
   } catch (err) {
-    console.error('categories error', err);
-    res.status(500).json({ error: 'Categories load failed' });
+    console.error('repairs error', err);
+    res.status(500).json({ error: 'Repairs load failed' });
   }
 });
 
-// GET series (optionally filter by category slug or id ?category=slugOrId)
+
+// GET all series (optionally filter by category slug or id via ?category=slugOrId)
 app.get('/api/series', async (req, res) => {
   try {
     const filter = {};
-    if (req.query.category) filter.category = req.query.category;
-    const Series = require('./models/Series');
-    const list = await Series.find(filter).sort({ order: 1 });
+    if (req.query.category) {
+      // if category looks like an ObjectId use directly, otherwise try to resolve slug/name -> _id
+      const cat = req.query.category;
+      if (/^[0-9a-fA-F]{24}$/.test(String(cat))) {
+        filter.category = cat;
+      } else {
+        // try find category by slug or name
+        const Category = require('./models/Category');
+        const found = await Category.findOne({ $or:[ { slug: cat }, { name: cat } ] }).lean();
+        if (!found) {
+          // return empty list rather than fail (widget expects [] sometimes)
+          return res.json([]);
+        }
+        filter.category = found._id;
+      }
+    }
+    const list = await require('./models/Series').find(filter).sort({ order: 1 }).lean();
     res.json(list);
   } catch (err) {
     console.error('series error', err);
@@ -75,22 +127,8 @@ app.get('/api/series', async (req, res) => {
   }
 });
 
-// GET models optionally by category or series
-// /api/models?category=slugOrId  OR /api/series/:seriesId/models
-app.get('/api/models', async (req, res) => {
-  try {
-    const filter = {};
-    if (req.query.category) filter.category = req.query.category;
-    if (req.query.series) filter.series = req.query.series;
-    const models = await DeviceModel.find(filter).sort({ brand: 1, name: 1 });
-    res.json(models);
-  } catch (err) {
-    console.error('models error', err);
-    res.status(500).json({ error: 'Models load failed' });
-  }
-});
 
-// GET models for a series
+// GET models for a series (returns models where series matches seriesId)
 app.get('/api/series/:seriesId/models', async (req, res) => {
   try {
     const { seriesId } = req.params;
@@ -102,43 +140,14 @@ app.get('/api/series/:seriesId/models', async (req, res) => {
   }
 });
 
-// GET repairs (optionally modelId to get effective prices)
-app.get('/api/repairs', async (req, res) => {
-  try {
-    const modelId = req.query.modelId;
-    let repairs = await RepairOption.find({}).sort({ name: 1 });
-    if (modelId) {
-      const model = await DeviceModel.findById(modelId);
-      repairs = repairs.map(r => {
-        const obj = r.toObject();
-        // priceOverrides structure: [ { repairOptionId, repairOptionCode, price } ]
-        let override = undefined;
-        if (model && Array.isArray(model.priceOverrides)) {
-          const ov = model.priceOverrides.find(po =>
-            (po.repairOptionId && po.repairOptionId.toString() === r._id.toString()) ||
-            (po.repairOptionCode && po.repairOptionCode === r.code)
-          );
-          if (ov) override = ov.price;
-        }
-        obj.priceEffective = (typeof override !== 'undefined') ? override : (r.basePrice || 'CALL_FOR_PRICE');
-        return obj;
-      });
-    }
-    res.json(repairs);
-  } catch (err) {
-    console.error('repairs error', err);
-    res.status(500).json({ error: 'Repairs load failed' });
-  }
-});
-
-// Admin auth (very simple header-based)
+// Admin simple password auth
 function adminAuth(req, res, next) {
   const pass = req.headers['x-admin-password'] || req.query.admin_password;
   if (pass && pass === process.env.ADMIN_PASSWORD) return next();
   return res.status(401).json({ error: 'Unauthorized' });
 }
 
-// Admin endpoints: create category/model/repair/series (minimal)
+// Admin endpoints: create/update categories/models/repairs
 app.post('/admin/category', adminAuth, async (req, res) => {
   const doc = new Category(req.body);
   await doc.save();
@@ -154,6 +163,7 @@ app.post('/admin/repair', adminAuth, async (req, res) => {
   await doc.save();
   res.json(doc);
 });
+
 app.post('/admin/series', adminAuth, async (req, res) => {
   const Series = require('./models/Series');
   const doc = new Series(req.body);
@@ -161,44 +171,40 @@ app.post('/admin/series', adminAuth, async (req, res) => {
   res.json(doc);
 });
 
+
 // Submit service request
 app.post('/api/submit', async (req, res) => {
-  try {
-    const payload = req.body;
-    if (!payload.contact || !payload.contact.email) return res.status(400).json({ error: 'Missing contact.email' });
+  const payload = req.body;
+  if (!payload.contact || !payload.contact.email) return res.status(400).json({ error: 'Missing contact.email' });
 
-    let price = null;
-    const repair = await RepairOption.findOne({ code: payload.repair_code }) || await RepairOption.findById(payload.repair_code);
-    if (!repair) {
-      price = 'CALL_FOR_PRICE';
-    } else {
-      if (payload.modelId) {
-        const model = await DeviceModel.findById(payload.modelId);
-        if (model && Array.isArray(model.priceOverrides)) {
-          const ov = model.priceOverrides.find(po =>
-            (po.repairOptionId && po.repairOptionId.toString() === repair._id.toString()) ||
-            (po.repairOptionCode && po.repairOptionCode === repair.code)
-          );
-          if (ov) price = ov.price;
-        }
+  let price = null;
+  const repair = await RepairOption.findOne({ code: payload.repair_code });
+  if (!repair) {
+    price = 'CALL_FOR_PRICE';
+  } else {
+    if (payload.modelId) {
+      const model = await DeviceModel.findById(payload.modelId);
+      if (model && model.priceOverrides && (model.priceOverrides[repair.code] || model.priceOverrides.get?.(repair.code))) {
+        price = model.priceOverrides[repair.code] || model.priceOverrides.get(repair.code);
       }
-      if (!price) price = repair.basePrice || 'CALL_FOR_PRICE';
     }
-
-    const rec = new ServiceRequest({
-      contact: payload.contact,
-      category: payload.category,
-      modelId: payload.modelId,
-      repair_code: payload.repair_code,
-      priceAtSubmit: price,
-      metadata: payload.metadata || {}
-    });
-    await rec.save();
-    res.json({ ok: true, id: rec._id, price, message: 'Request received' });
-  } catch (err) {
-    console.error('submit error', err);
-    res.status(500).json({ error: 'Submit failed' });
+    if (!price) {
+      price = repair.basePrice || 'CALL_FOR_PRICE';
+    }
   }
+
+  const rec = new ServiceRequest({
+    contact: payload.contact,
+    category: payload.category,
+    modelId: payload.modelId,
+    repair_code: payload.repair_code,
+    priceAtSubmit: price,
+    metadata: payload.metadata || {}
+  });
+  await rec.save();
+
+  // TODO: add notifications/email here
+  res.json({ ok: true, id: rec._id, price, message: 'Request received' });
 });
 
 const PORT = process.env.PORT || 4000;
