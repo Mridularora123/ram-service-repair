@@ -22,17 +22,17 @@ app.get('/widget.js', (req, res) => {
 
 
 // Basic health
-app.get('/_health', (req, res) => res.json({ok:true}));
+app.get('/_health', (req, res) => res.json({ ok: true }));
 
 // Connect MongoDB
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/ram-service';
 mongoose.connect(MONGODB_URI, { useNewUrlParser: true, useUnifiedTopology: true })
-  .then(()=>console.log('MongoDB connected'))
-  .catch(err=>console.error('MongoDB error', err));
+  .then(() => console.log('MongoDB connected'))
+  .catch(err => console.error('MongoDB error', err));
 
 // Public API: lists for frontend widget
 app.get('/api/categories', async (req, res) => {
-  const cats = await Category.find({}).sort({order:1});
+  const cats = await Category.find({}).sort({ order: 1 });
   res.json(cats);
 });
 
@@ -40,7 +40,7 @@ app.get('/api/models', async (req, res) => {
   // optional ?category=Tablet
   const filter = {};
   if (req.query.category) filter.category = req.query.category;
-  const models = await DeviceModel.find(filter).sort({brand:1,name:1});
+  const models = await DeviceModel.find(filter).sort({ brand: 1, name: 1 });
   res.json(models);
 });
 
@@ -53,11 +53,11 @@ app.get('/api/repairs', async (req, res) => {
     const model = await DeviceModel.findById(modelId);
     repairs = repairs.map(r => {
       const obj = r.toObject();
-      if (model && model.priceOverrides && model.priceOverrides[r.code]) {
-        obj.priceEffective = model.priceOverrides[r.code];
-      }
+      const override = model?.priceOverrides?.get(r.code);
+      obj.priceEffective = override || r.basePrice || "CALL_FOR_PRICE";
       return obj;
     });
+
   }
   res.json(repairs);
 });
@@ -66,34 +66,34 @@ app.get('/api/repairs', async (req, res) => {
 function adminAuth(req, res, next) {
   const pass = req.headers['x-admin-password'] || req.query.admin_password;
   if (pass && pass === process.env.ADMIN_PASSWORD) return next();
-  return res.status(401).json({error:'Unauthorized'});
+  return res.status(401).json({ error: 'Unauthorized' });
 }
 
 // Admin endpoints: create/update categories/models/repairs
-app.post('/admin/category', adminAuth, async (req,res)=>{
+app.post('/admin/category', adminAuth, async (req, res) => {
   const doc = new Category(req.body);
   await doc.save();
   res.json(doc);
 });
-app.post('/admin/model', adminAuth, async (req,res)=>{
+app.post('/admin/model', adminAuth, async (req, res) => {
   const doc = new DeviceModel(req.body);
   await doc.save();
   res.json(doc);
 });
-app.post('/admin/repair', adminAuth, async (req,res)=>{
+app.post('/admin/repair', adminAuth, async (req, res) => {
   const doc = new RepairOption(req.body);
   await doc.save();
   res.json(doc);
 });
 
 // Submit service request
-app.post('/api/submit', async (req,res)=>{
+app.post('/api/submit', async (req, res) => {
   const payload = req.body;
   // basic validation
-  if (!payload.contact || !payload.contact.email) return res.status(400).json({error:'Missing contact.email'});
+  if (!payload.contact || !payload.contact.email) return res.status(400).json({ error: 'Missing contact.email' });
   // compute price precedence: model override > repair option override > category-level > default price
   let price = null;
-  const repair = await RepairOption.findOne({code: payload.repair_code});
+  const repair = await RepairOption.findOne({ code: payload.repair_code });
   if (!repair) {
     price = 'CALL_FOR_PRICE';
   } else {
@@ -119,8 +119,8 @@ app.post('/api/submit', async (req,res)=>{
   await rec.save();
 
   // TODO: send emails using configured transporter (left for integration)
-  res.json({ok:true, id: rec._id, price, message: 'Request received'});
+  res.json({ ok: true, id: rec._id, price, message: 'Request received' });
 });
 
 const PORT = process.env.PORT || 4000;
-app.listen(PORT, ()=>console.log('Server started on', PORT));
+app.listen(PORT, () => console.log('Server started on', PORT));
