@@ -1,64 +1,56 @@
-// server.js
+// server.js — final robust version
 require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
 const path = require('path');
-const bodyParser = require('body-parser');
 const cors = require('cors');
-const morgan = require('morgan');
-const helmet = require('helmet');
-
-// Models (make sure these files exist in ./models)
-const Category = require('./models/Category');
-const DeviceModel = require('./models/Model');
-const RepairOption = require('./models/RepairOption');
-const ServiceRequest = require('./models/ServiceRequest');
-const Series = require('./models/Series');
 
 const app = express();
 
-// security & logging (optional but recommended)
-app.use(helmet());
-app.use(morgan('combined'));
+// try to require optional middleware but don't crash if not installed
+try { const helmet = require('helmet'); app.use(helmet()); } catch (e) { /* optional */ }
+try { const morgan = require('morgan'); app.use(morgan('dev')); } catch (e) { /* optional */ }
 
-// basic middleware
-app.use(cors()); // allow all origins (change to specific origin in production)
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
+app.use(cors({
+  origin: true, // allow requests from anywhere (for development). Restrict in production.
+  methods: ['GET','POST','OPTIONS'],
+  allowedHeaders: ['Content-Type','x-admin-password']
+}));
+app.use(express.json());
 
-// serve admin static UI (optional)
-app.use('/admin', express.static(path.join(__dirname, 'admin')));
+// Models (assumes these files exist in ./models)
+const Category = require('./models/Category');
+const DeviceModel = require('./models/Model'); // file name Model.js exporting DeviceModel
+const RepairOption = require('./models/RepairOption');
+const ServiceRequest = require('./models/ServiceRequest');
 
-// serve embeddable widget file directly (static JS)
+// Serve embeddable widget JS file
 app.get('/widget.js', (req, res) => {
   res.type('application/javascript');
   res.sendFile(path.join(__dirname, 'widget-example.js'));
 });
 
-// optional small embeddable snippet endpoint for theme copy/paste
+// small snippet (useful if you want to paste an embed snippet)
 app.get('/embed', (req, res) => {
   const envAppUrl = (process.env.APP_URL || '').replace(/\/$/, '');
   const host = envAppUrl || `${req.protocol}://${req.get('host')}`;
-  // The snippet injects the widget script and ensures there's a mount point
-  const script = `<script>(function(){var s=document.createElement('script');s.src='${host}/widget.js';s.async=true;var mount=document.getElementById('ram-service-widget'); if(!mount){mount=document.createElement('div');mount.id='ram-service-widget';document.body.appendChild(mount);} document.getElementById('ram-service-widget').appendChild(s);})();</script>`;
-  res.type('text/html');
-  res.send(script);
+  const script = `<script>(function(){var s=document.createElement('script');s.src='${host}/widget.js';s.async=true;var mount=document.getElementById('ram-service-widget'); if(!mount){mount=document.createElement('div');mount.id='ram-service-widget';document.body.appendChild(mount);} mount.appendChild(s); })();</script>`;
+  res.type('text/html').send(script);
 });
 
-// root health
-app.get('/', (req, res) => res.json({ ok: true, message: 'RAM service API running' }));
+// health + root
 app.get('/_health', (req, res) => res.json({ ok: true }));
+app.get('/', (req, res) => res.json({ ok: true, message: 'RAM service API running' }));
 
-// Connect MongoDB
+// connect to mongo
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/ram-service';
 mongoose.connect(MONGODB_URI, { useNewUrlParser: true, useUnifiedTopology: true })
-  .then(() => console.log('MongoDB connected'))
-  .catch(err => {
-    console.error('MongoDB error', err);
-    // do not exit — allow the app to start (you can handle later)
-  });
+  .then(()=> console.log('MongoDB connected'))
+  .catch(err => console.error('MongoDB error', err));
 
-// Public API: categories
+// PUBLIC API
+
+// GET categories
 app.get('/api/categories', async (req, res) => {
   try {
     const cats = await Category.find({}).sort({ order: 1 });
@@ -69,11 +61,12 @@ app.get('/api/categories', async (req, res) => {
   }
 });
 
-// series (optionally filter by category slug or id via ?category=...)
+// GET series (optionally filter by category slug or id ?category=slugOrId)
 app.get('/api/series', async (req, res) => {
   try {
     const filter = {};
     if (req.query.category) filter.category = req.query.category;
+    const Series = require('./models/Series');
     const list = await Series.find(filter).sort({ order: 1 });
     res.json(list);
   } catch (err) {
@@ -82,13 +75,13 @@ app.get('/api/series', async (req, res) => {
   }
 });
 
-// models list (optionally filter by category or series)
+// GET models optionally by category or series
+// /api/models?category=slugOrId  OR /api/series/:seriesId/models
 app.get('/api/models', async (req, res) => {
   try {
     const filter = {};
     if (req.query.category) filter.category = req.query.category;
     if (req.query.series) filter.series = req.query.series;
-    if (req.query.seriesId) filter.series = req.query.seriesId;
     const models = await DeviceModel.find(filter).sort({ brand: 1, name: 1 });
     res.json(models);
   } catch (err) {
@@ -97,7 +90,7 @@ app.get('/api/models', async (req, res) => {
   }
 });
 
-// models by seriesId (returns models where series matches seriesId)
+// GET models for a series
 app.get('/api/series/:seriesId/models', async (req, res) => {
   try {
     const { seriesId } = req.params;
@@ -109,22 +102,25 @@ app.get('/api/series/:seriesId/models', async (req, res) => {
   }
 });
 
-// repairs list (optionally compute price overrides when modelId provided)
+// GET repairs (optionally modelId to get effective prices)
 app.get('/api/repairs', async (req, res) => {
   try {
     const modelId = req.query.modelId;
-    let repairs = await RepairOption.find({});
+    let repairs = await RepairOption.find({}).sort({ name: 1 });
     if (modelId) {
       const model = await DeviceModel.findById(modelId);
       repairs = repairs.map(r => {
         const obj = r.toObject();
-        // model.priceOverrides is an array of { repairOptionCode, price }
-        let override = null;
+        // priceOverrides structure: [ { repairOptionId, repairOptionCode, price } ]
+        let override = undefined;
         if (model && Array.isArray(model.priceOverrides)) {
-          const o = model.priceOverrides.find(p => p.repairOptionCode === r.code || String(p.repairOptionId) === String(r._id));
-          if (o) override = o.price;
+          const ov = model.priceOverrides.find(po =>
+            (po.repairOptionId && po.repairOptionId.toString() === r._id.toString()) ||
+            (po.repairOptionCode && po.repairOptionCode === r.code)
+          );
+          if (ov) override = ov.price;
         }
-        obj.priceEffective = (override != null) ? override : (r.basePrice || 'CALL_FOR_PRICE');
+        obj.priceEffective = (typeof override !== 'undefined') ? override : (r.basePrice || 'CALL_FOR_PRICE');
         return obj;
       });
     }
@@ -135,25 +131,34 @@ app.get('/api/repairs', async (req, res) => {
   }
 });
 
-// simple admin auth for quick admin UI (password via env ADMIN_PASSWORD)
+// Admin auth (very simple header-based)
 function adminAuth(req, res, next) {
   const pass = req.headers['x-admin-password'] || req.query.admin_password;
-  if (pass && process.env.ADMIN_PASSWORD && pass === process.env.ADMIN_PASSWORD) return next();
+  if (pass && pass === process.env.ADMIN_PASSWORD) return next();
   return res.status(401).json({ error: 'Unauthorized' });
 }
 
-// Admin endpoints for seeding data from the minimal admin page
+// Admin endpoints: create category/model/repair/series (minimal)
 app.post('/admin/category', adminAuth, async (req, res) => {
-  try { const doc = new Category(req.body); await doc.save(); res.json(doc); } catch (err) { console.error(err); res.status(500).json({ error: 'Create category failed' }); }
+  const doc = new Category(req.body);
+  await doc.save();
+  res.json(doc);
 });
 app.post('/admin/model', adminAuth, async (req, res) => {
-  try { const doc = new DeviceModel(req.body); await doc.save(); res.json(doc); } catch (err) { console.error(err); res.status(500).json({ error: 'Create model failed' }); }
+  const doc = new DeviceModel(req.body);
+  await doc.save();
+  res.json(doc);
 });
 app.post('/admin/repair', adminAuth, async (req, res) => {
-  try { const doc = new RepairOption(req.body); await doc.save(); res.json(doc); } catch (err) { console.error(err); res.status(500).json({ error: 'Create repair failed' }); }
+  const doc = new RepairOption(req.body);
+  await doc.save();
+  res.json(doc);
 });
 app.post('/admin/series', adminAuth, async (req, res) => {
-  try { const doc = new Series(req.body); await doc.save(); res.json(doc); } catch (err) { console.error(err); res.status(500).json({ error: 'Create series failed' }); }
+  const Series = require('./models/Series');
+  const doc = new Series(req.body);
+  await doc.save();
+  res.json(doc);
 });
 
 // Submit service request
@@ -163,15 +168,18 @@ app.post('/api/submit', async (req, res) => {
     if (!payload.contact || !payload.contact.email) return res.status(400).json({ error: 'Missing contact.email' });
 
     let price = null;
-    const repair = await RepairOption.findOne({ code: payload.repair_code });
+    const repair = await RepairOption.findOne({ code: payload.repair_code }) || await RepairOption.findById(payload.repair_code);
     if (!repair) {
       price = 'CALL_FOR_PRICE';
     } else {
       if (payload.modelId) {
         const model = await DeviceModel.findById(payload.modelId);
         if (model && Array.isArray(model.priceOverrides)) {
-          const ovr = model.priceOverrides.find(p => p.repairOptionCode === repair.code || String(p.repairOptionId) === String(repair._id));
-          if (ovr) price = ovr.price;
+          const ov = model.priceOverrides.find(po =>
+            (po.repairOptionId && po.repairOptionId.toString() === repair._id.toString()) ||
+            (po.repairOptionCode && po.repairOptionCode === repair.code)
+          );
+          if (ov) price = ov.price;
         }
       }
       if (!price) price = repair.basePrice || 'CALL_FOR_PRICE';
@@ -186,18 +194,11 @@ app.post('/api/submit', async (req, res) => {
       metadata: payload.metadata || {}
     });
     await rec.save();
-
-    // optional: send notification/email here
     res.json({ ok: true, id: rec._id, price, message: 'Request received' });
   } catch (err) {
     console.error('submit error', err);
     res.status(500).json({ error: 'Submit failed' });
   }
-});
-
-// static catch-all for unknown routes
-app.use((req, res) => {
-  res.status(404).json({ error: 'Not found' });
 });
 
 const PORT = process.env.PORT || 4000;
