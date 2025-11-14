@@ -1,13 +1,5 @@
-/* RAM Service Repair — storefront widget (updated styling + flow)
-   Replace widget-example.js with this file and serve it at /widget.js
-   Expects API endpoints:
-     GET  /api/categories
-     GET  /api/series
-     GET  /api/series/:seriesId/models
-     GET  /api/models?category=slug
-     GET  /api/repairs?modelId=MODEL_ID
-     POST /api/submit
-*/
+// widget-example.js
+// RAM Service Repair storefront widget
 (function () {
   // ---- CONFIG ----------
   const API_BASE = (window.RAM_SERVICE_API_BASE || '').replace(/\/$/, '') || 'https://ram-service-repair1.onrender.com';
@@ -67,9 +59,7 @@
   #${mountId} .${ns}-row{display:flex;gap:14px;flex-wrap:wrap;}
   #${mountId} .${ns}-col{flex:1 1 220px;min-width:220px;}
   #${mountId} label{display:block;font-size:13px;margin-bottom:6px;font-weight:700;color:#26313b;}
-  #${mountId} input[type=text], #${mountId} input[type=email], #${mountId} input[type=tel], #${mountId} textarea, #${mountId} select {
-    width:100%; padding:12px 16px;border-radius:999px;border:2px solid rgba(10,20,40,0.06);background:#fff;box-sizing:border-box;font-size:14px;
-  }
+  #${mountId} input[type=text], #${mountId} input[type=email], #${mountId} input[type=tel], #${mountId} textarea, #${mountId} select { width:100%; padding:12px 16px;border-radius:999px;border:2px solid rgba(10,20,40,0.06);background:#fff;box-sizing:border-box;font-size:14px; }
   #${mountId} textarea{min-height:120px;border-radius:12px;padding:14px;}
   #${mountId} .${ns}-hr{height:1px;background:rgba(10,20,40,0.06);margin:18px 0;border-radius:2px;}
   #${mountId} .${ns}-btn{display:inline-block;padding:12px 24px;border-radius:28px;background:#0a63d6;color:#fff;font-weight:800;border:none;cursor:pointer;box-shadow:0 8px 18px rgba(10,20,40,0.08);}
@@ -77,7 +67,6 @@
   #${mountId} .${ns}-summaryTitle{font-weight:800;margin:0 0 6px 0;font-size:15px;}
   #${mountId} .${ns}-summaryPrice{font-size:22px;font-weight:900;}
   #${mountId} .${ns}-hidden{display:none;}
-  /* responsive */
   @media (max-width:980px){
     #${mountId} .${ns}-tile{width:45%;}
     #${mountId} .${ns}-col{min-width:100%;}
@@ -184,8 +173,6 @@
   }
 
   function renderSeries(list) {
-    // add a compact series row below selected category (re-using same tile style)
-    // clear any existing series panel inside categoryPanel
     let seriesRow = mount.querySelector('.' + ns + '-seriesRow');
     if (!seriesRow) {
       seriesRow = ce('div', ns + '-grid ' + ns + '-seriesRow');
@@ -194,7 +181,6 @@
     }
     clearChildren(seriesRow);
     if (!list || list.length === 0) {
-      // nothing
       return;
     }
     list.forEach(s => {
@@ -225,7 +211,6 @@
       modelPill.classList.remove('selected');
       modelPill.style.border = '2px solid #061130';
       modelPill.onclick = () => {
-        // if models exist, open select modal (simple native select)
         if (state.models && state.models.length) {
           openModelSelect();
         }
@@ -235,12 +220,10 @@
     modelPill.innerText = `${model.name}${model.brand ? ' — ' + model.brand : ''}`;
     modelPill.classList.add('selected');
     modelPill.style.border = '2px dashed rgba(0,0,0,0.06)';
-    // clicking shows (or toggles) details or re-open model select
     modelPill.onclick = openModelSelect;
   }
 
   function openModelSelect() {
-    // modal-like small dropdown (simple)
     const existing = document.getElementById(ns + '-model-select-popup');
     if (existing) { existing.remove(); return; }
     const popup = ce('div'); popup.id = ns + '-model-select-popup';
@@ -288,7 +271,6 @@
         qa('.' + ns + '-tile', damageGrid).forEach(c => c.classList.remove('selected'));
         t.classList.add('selected');
         showForm();
-        // scroll to form
         formWrap.scrollIntoView({ behavior: 'smooth', block: 'start' });
       };
       damageGrid.appendChild(t);
@@ -317,7 +299,6 @@
     for (let i = 0; i < pEls.length; i++) {
       pEls[i].innerText = state.price ? money(state.price) : 'CALL_FOR_PRICE';
     }
-    // also small summary title
     const titleEl = mount.querySelector('.' + ns + '-summaryTitle');
     if (titleEl) titleEl.innerText = state.selectedModel ? (state.selectedModel.name || '') : 'Repair selection';
   }
@@ -331,7 +312,6 @@
     clearChildren(formWrap);
     formWrap.classList.remove(ns + '-hidden');
 
-    // top summary row
     const top = ce('div'); top.className = ns + '-row';
     top.style.marginBottom = '12px';
     const left = ce('div', ns + '-col');
@@ -349,11 +329,9 @@
     top.appendChild(left); top.appendChild(right);
     formWrap.appendChild(top);
 
-    // header
     const header = ce('h3'); header.innerText = 'REPAIR FORM'; header.style.margin = '12px 0';
     formWrap.appendChild(header);
 
-    // contact info grid
     const grid = ce('div', ns + '-row');
     grid.style.marginBottom = '12px';
     const makeField = (labelText, name, type = 'text', placeholder = '', required = false) => {
@@ -377,13 +355,11 @@
 
     formWrap.appendChild(ce('div', ns + '-hr'));
 
-    // Device fields
     const deviceRow = ce('div', ns + '-row');
     deviceRow.appendChild(makeField('Device manufacturer and model', 'device_model', 'text', 'Manufacturer and model', true));
     deviceRow.appendChild(makeField('IMEI/Serial number', 'imei', 'text', 'IMEI/Serial number'));
     formWrap.appendChild(deviceRow);
 
-    // radio groups
     const radiosRow = ce('div', ns + '-row');
     const makeRadioGroup = (labelText, name, opts) => {
       const wrap = ce('div', ns + '-col');
@@ -402,12 +378,10 @@
     radiosRow.appendChild(makeRadioGroup('Invoice with IMEI', 'receipt', [{ value: 'YES', label: 'YES' }, { value: 'NO', label: 'NO' }]));
     formWrap.appendChild(radiosRow);
 
-    // note
     const note = ce('div'); note.className = ns + '-muted'; note.style.margin = '12px 0';
     note.innerHTML = `<small><b>Note:</b> Data transfer/preservation is an optional paid service. (Replace in admin later)</small>`;
     formWrap.appendChild(note);
 
-    // PIN & pattern
     const pinRow = ce('div', ns + '-row');
     const pinCol = ce('div', ns + '-col'); pinCol.appendChild(makeField('PIN', 'pin', 'text', 'PIN'));
     const patCol = ce('div', ns + '-col');
@@ -417,7 +391,6 @@
     pinRow.appendChild(pinCol); pinRow.appendChild(patCol);
     formWrap.appendChild(pinRow);
 
-    // Service type select
     const serviceRow = ce('div', ns + '-row');
     const serviceCol = ce('div', ns + '-col');
     const serviceLab = ce('label'); serviceLab.innerText = 'How to get to the Service';
@@ -427,25 +400,21 @@
     serviceRow.appendChild(serviceCol);
     formWrap.appendChild(serviceRow);
 
-    // description
     formWrap.appendChild(ce('div', ns + '-hr'));
     const descCol = ce('div'); descCol.appendChild(makeField('Error description', 'body', 'textarea', 'Describe the problem'));
     formWrap.appendChild(descCol);
 
-    // signature
     formWrap.appendChild(ce('div', ns + '-hr'));
     const signRow = ce('div', ns + '-row');
     signRow.appendChild(makeField('Signature', 'signature', 'text', 'Signature'));
     formWrap.appendChild(signRow);
 
-    // submit
     const submitRow = ce('div'); submitRow.style.textAlign = 'left'; submitRow.style.marginTop = '16px';
     const btn = ce('button'); btn.className = ns + '-btn'; btn.innerText = 'Request repair';
     btn.onclick = onSubmit;
     submitRow.appendChild(btn);
     formWrap.appendChild(submitRow);
 
-    // hidden metadata stored on container
     formWrap.dataset.category = state.selectedCategory ? state.selectedCategory.slug : '';
     formWrap.dataset.series = state.selectedSeries ? (state.selectedSeries._id || '') : '';
     formWrap.dataset.modelId = state.selectedModel ? (state.selectedModel._id || '') : '';
@@ -531,7 +500,6 @@
   }
 
   function loadSeries(category) {
-    // call /api/series and client filter by category if necessary
     apiGET('/api/series').then(list => {
       const filtered = (list || []).filter(s => {
         if (!category) return true;
@@ -550,7 +518,6 @@
     apiGET('/api/series/' + encodeURIComponent(seriesId) + '/models').then(list => {
       state.models = list || [];
       renderModelsPill(null);
-      // prefer popup select later; for quick selection keep pill clickable
     }).catch(err => {
       console.error('models for series err', err);
     });

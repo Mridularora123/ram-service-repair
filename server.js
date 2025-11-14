@@ -22,19 +22,15 @@ app.get('/widget.js', (req, res) => {
 });
 
 // optional small embeddable snippet endpoint
-// returns a small JS snippet you can paste into Shopify custom liquid.
-// It references APP_URL from env (fallback to request host).
 app.get('/embed', (req, res) => {
-  // prefer APP_URL if set, otherwise build from request
   const envAppUrl = (process.env.APP_URL || '').replace(/\/$/, '');
   const host = envAppUrl || `${req.protocol}://${req.get('host')}`;
-  // script to inject widget.js from your host (no regex literals inside the string)
   const script = `<script>(function(){var s=document.createElement('script');s.src='${host}/widget.js';s.async=true;var mount=document.getElementById('ram-service-widget'); if(!mount){mount=document.createElement('div');mount.id='ram-service-widget';document.body.appendChild(mount);} mount.appendChild(s); })();</script>`;
   res.type('text/html');
   res.send(script);
 });
 
-// simple health check
+// small health
 app.get('/_health', (req, res) => res.json({ ok: true }));
 
 // Connect MongoDB
@@ -64,10 +60,8 @@ app.get('/api/repairs', async (req, res) => {
     if (modelId) {
       const model = await DeviceModel.findById(modelId).lean();
       if (model) {
-        // priceOverrides is an array of { repairOptionId, repairOptionCode, price }
         repairs = repairs.map(r => {
           const obj = { ...r };
-          // find override by repairOptionId (ObjectId string) OR by repairOptionCode
           let overrideEntry = null;
           if (Array.isArray(model.priceOverrides)) {
             overrideEntry = model.priceOverrides.find(po => {
@@ -84,7 +78,6 @@ app.get('/api/repairs', async (req, res) => {
           return obj;
         });
       } else {
-        // modelId passed but not found — leave repairs with basePrice
         repairs = repairs.map(r => ({ ...r, priceEffective: (r.basePrice !== undefined && r.basePrice !== null) ? r.basePrice : 'CALL_FOR_PRICE' }));
       }
     } else {
@@ -98,24 +91,17 @@ app.get('/api/repairs', async (req, res) => {
   }
 });
 
-
-// GET all series (optionally filter by category slug or id via ?category=slugOrId)
+// GET all series (optional filter by ?category=slugOrId)
 app.get('/api/series', async (req, res) => {
   try {
     const filter = {};
     if (req.query.category) {
-      // if category looks like an ObjectId use directly, otherwise try to resolve slug/name -> _id
       const cat = req.query.category;
       if (/^[0-9a-fA-F]{24}$/.test(String(cat))) {
         filter.category = cat;
       } else {
-        // try find category by slug or name
-        const Category = require('./models/Category');
         const found = await Category.findOne({ $or:[ { slug: cat }, { name: cat } ] }).lean();
-        if (!found) {
-          // return empty list rather than fail (widget expects [] sometimes)
-          return res.json([]);
-        }
+        if (!found) return res.json([]);
         filter.category = found._id;
       }
     }
@@ -127,8 +113,7 @@ app.get('/api/series', async (req, res) => {
   }
 });
 
-
-// GET models for a series (returns models where series matches seriesId)
+// GET models for a series
 app.get('/api/series/:seriesId/models', async (req, res) => {
   try {
     const { seriesId } = req.params;
@@ -147,7 +132,7 @@ function adminAuth(req, res, next) {
   return res.status(401).json({ error: 'Unauthorized' });
 }
 
-// Admin endpoints: create/update categories/models/repairs
+// Admin CRUD endpoints
 app.post('/admin/category', adminAuth, async (req, res) => {
   const doc = new Category(req.body);
   await doc.save();
@@ -163,14 +148,12 @@ app.post('/admin/repair', adminAuth, async (req, res) => {
   await doc.save();
   res.json(doc);
 });
-
 app.post('/admin/series', adminAuth, async (req, res) => {
   const Series = require('./models/Series');
   const doc = new Series(req.body);
   await doc.save();
   res.json(doc);
 });
-
 
 // Submit service request
 app.post('/api/submit', async (req, res) => {
@@ -184,13 +167,17 @@ app.post('/api/submit', async (req, res) => {
   } else {
     if (payload.modelId) {
       const model = await DeviceModel.findById(payload.modelId);
-      if (model && model.priceOverrides && (model.priceOverrides[repair.code] || model.priceOverrides.get?.(repair.code))) {
-        price = model.priceOverrides[repair.code] || model.priceOverrides.get(repair.code);
+      if (model && model.priceOverrides) {
+        // priceOverrides could be stored as object or array; handle basic cases
+        if (Array.isArray(model.priceOverrides)) {
+          const po = model.priceOverrides.find(x => x.repairOptionCode === repair.code || String(x.repairOptionId) === String(repair._id));
+          if (po) price = po.price;
+        } else if (typeof model.priceOverrides === 'object') {
+          price = model.priceOverrides[repair.code] || model.priceOverrides.get?.(repair.code);
+        }
       }
     }
-    if (!price) {
-      price = repair.basePrice || 'CALL_FOR_PRICE';
-    }
+    if (!price) price = repair.basePrice || 'CALL_FOR_PRICE';
   }
 
   const rec = new ServiceRequest({
@@ -203,7 +190,6 @@ app.post('/api/submit', async (req, res) => {
   });
   await rec.save();
 
-  // TODO: add notifications/email here
   res.json({ ok: true, id: rec._id, price, message: 'Request received' });
 });
 
