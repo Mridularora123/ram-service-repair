@@ -506,6 +506,7 @@
   }
 
   // Robust loadSeriesForCategory: tries strict server query, then flexible fallback queries and finally client-side filter.
+  // Robust loadSeriesForCategory: tries strict server query, then flexible fallback queries and finally client-side filter.
   function loadSeriesForCategory(category) {
     if (!category) return;
     const param = encodeURIComponent(category.slug || category._id || category.name || '');
@@ -525,16 +526,34 @@
 
           const filtered = (all || []).filter(s => {
             if (!s) return false;
-            const sc = s.category;
-            // handle category stored as string id/slug/name
-            if (!sc) return false;
-            if (typeof sc === 'string') {
-              return sc === String(category._id) || sc === category.slug || sc === category.name;
-            } else if (typeof sc === 'object') {
-              // populated object
-              return String(sc._id || sc.id || sc) === String(category._id) || (sc.slug && sc.slug === category.slug) || (sc.name && sc.name === category.name);
+
+            // Accept many shapes: s.category (string or populated object), s.categoryId, s.category_id etc.
+            const scCandidates = [];
+
+            // raw fields
+            if (s.category !== undefined) scCandidates.push(s.category);
+            if (s.categoryId !== undefined) scCandidates.push(s.categoryId);
+            if (s.category_id !== undefined) scCandidates.push(s.category_id);
+
+            // populated object
+            if (s.category && typeof s.category === 'object') {
+              scCandidates.push(s.category._id || s.category.id || s.category.slug || s.category.name);
             }
-            return false;
+
+            // Also accept series whose slug/name matches category (if someone used slug there)
+            scCandidates.push(s.slug);
+            scCandidates.push(s.name);
+
+            // flatten to strings and compare
+            const catIdStr = String(category._id || category.id || category).toLowerCase();
+            const catSlug = (category.slug || '').toLowerCase();
+            const catName = (category.name || '').toLowerCase();
+
+            return scCandidates.some(c => {
+              if (c === null || c === undefined) return false;
+              const cs = String(c).toLowerCase();
+              return cs === catIdStr || cs === catSlug || cs === catName;
+            });
           });
 
           console.log('[ramsvc] fallback filtered series count:', filtered.length);
@@ -550,11 +569,20 @@
       apiGET('/api/series').then(all => {
         const filtered = (all || []).filter(s => {
           if (!s) return false;
-          const sc = s.category;
-          if (!sc) return false;
-          if (typeof sc === 'string') return sc === String(category._id) || sc === category.slug || sc === category.name;
-          else if (typeof sc === 'object') return String(sc._id || sc.id || sc) === String(category._id) || (sc.slug && sc.slug === category.slug) || (sc.name && sc.name === category.name);
-          return false;
+          const scCandidates = [];
+          if (s.category !== undefined) scCandidates.push(s.category);
+          if (s.categoryId !== undefined) scCandidates.push(s.categoryId);
+          if (s.category_id !== undefined) scCandidates.push(s.category_id);
+          if (s.category && typeof s.category === 'object') scCandidates.push(s.category._id || s.category.id || s.category.slug || s.category.name);
+          scCandidates.push(s.slug); scCandidates.push(s.name);
+          const catIdStr = String(category._id || category.id || category).toLowerCase();
+          const catSlug = (category.slug || '').toLowerCase();
+          const catName = (category.name || '').toLowerCase();
+          return scCandidates.some(c => {
+            if (c === null || c === undefined) return false;
+            const cs = String(c).toLowerCase();
+            return cs === catIdStr || cs === catSlug || cs === catName;
+          });
         });
         state.series = filtered;
         renderSeries(state.series);
@@ -563,6 +591,7 @@
       });
     });
   }
+
 
   function loadModelsForSeries(seriesId) {
     if (!seriesId) return;

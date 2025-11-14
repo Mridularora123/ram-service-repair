@@ -132,15 +132,54 @@ app.get('/api/models', async (req, res) => {
 });
 
 // GET models for a series
-app.get('/api/series/:seriesId/models', async (req, res) => {
+// GET series (optional ?category=slugOrId)
+app.get('/api/series', async (req, res) => {
   try {
-    const models = await DeviceModel.find({ series: req.params.seriesId }).sort({ order: 1 }).populate('repairs').lean();
-    res.json(models);
+    const qcat = req.query.category;
+    const filter = {};
+
+    if (qcat) {
+      // if qcat looks like ObjectId, try match by ObjectId in common fields
+      if (/^[0-9a-fA-F]{24}$/.test(String(qcat))) {
+        // match common series fields that can reference category
+        filter.$or = [
+          { category: qcat },         // category stored as ObjectId
+          { categoryId: qcat },       // alternative field
+          { category_id: qcat }       // another possible naming
+        ];
+      } else {
+        // try to resolve qcat to a category _id (by slug or name)
+        const found = await Category.findOne({ $or: [{ slug: qcat }, { name: qcat }] }).lean();
+        if (found) {
+          filter.$or = [
+            { category: found._id },
+            { categoryId: String(found._id) },
+            { category_id: String(found._id) }
+          ];
+        } else {
+          // if not found, still allow flexible server-side matching on series documents:
+          const q = qcat;
+          filter.$or = [
+            { category: q },            // category stored as slug or name string
+            { categoryId: q },
+            { category_id: q },
+            { 'category.slug': q },
+            { 'category.name': q },
+            { slug: q },                // series slug equals q
+            { name: q }                 // series name equals q
+          ];
+        }
+      }
+    }
+
+    const list = await Series.find(filter).sort({ order: 1 }).populate('category').lean();
+    res.json(list);
   } catch (err) {
-    console.error('series models err', err);
-    res.status(500).json({ error: 'Models for series failed' });
+    console.error('series err', err);
+    res.status(500).json({ error: 'Series load failed' });
   }
 });
+
 
 // GET repairs (global). Optional ?modelId to filter to model-supported repairs and compute effective prices.
 app.get('/api/repairs', async (req, res) => {
