@@ -56,52 +56,60 @@ app.get('/api/categories', async (req, res) => {
   }
 });
 
-// GET series (optional ?category=slugOrId) — robust + fallback
-// GET series (optional ?category=slugOrId) — robust + fallback
+/**
+ * GET series
+ * Optional query param: ?category=slugOrIdOrName
+ * This route is robust:
+ * - If category param looks like ObjectId -> query by category ObjectId
+ * - Else try to find Category by slug/name and use its _id
+ * - Else run a flexible $or query to match series when series.category stored as:
+ *     - string (slug/name/ObjectId string)
+ *     - populated object { _id, slug, name }
+ *     - legacy fields like categoryId or category_id
+ * - Return empty array if nothing found
+ */
 app.get('/api/series', async (req, res) => {
   try {
     const qcat = req.query.category;
     const filter = {};
 
     if (qcat) {
-      // if qcat looks like an ObjectId -> use it directly
+      // 1) If looks like ObjectId -> assume id
       if (/^[0-9a-fA-F]{24}$/.test(String(qcat))) {
-        // support both category (ObjectId) and categoryId (string) stored shapes
-        filter.$or = [
-          { category: qcat },        // ObjectId stored as category
-          { categoryId: String(qcat) } // categoryId stored as string
-        ];
+        // find by exact ObjectId stored in series.category (if it's an ObjectId)
+        filter.category = qcat;
       } else {
-        // try to find matching Category by slug or name
-        const found = await Category.findOne({ $or: [{ slug: qcat }, { name: qcat }] }).lean();
-        if (found) {
-          filter.$or = [
-            { category: found._id },         // normal ObjectId ref
-            { categoryId: String(found._id) }, // older shape: categoryId string
-            { 'category.slug': found.slug }, // populated object shape
-            { 'category.name': found.name }
-          ];
+        // 2) Try to find a Category document whose slug or name equals qcat
+        const foundCat = await Category.findOne({ $or: [{ slug: qcat }, { name: qcat }] }).lean();
+        if (foundCat) {
+          filter.category = foundCat._id;
         } else {
-          // fallback flexible search: series might store category as slug/name directly
+          // 3) Flexible fallback: attempt to match series where category may be stored in various shapes.
+          // This will match series that store category as a string id/slug/name or as a populated object.
+          const q = qcat;
           const flexibleFilter = {
             $or: [
-              { category: qcat },          // category field equal to slug or name
-              { categoryId: qcat },        // categoryId equals slug/name (rare)
-              { 'category.slug': qcat },
-              { 'category.name': qcat },
-              { slug: qcat },              // series slug/name matches
-              { name: qcat }
+              { category: q },            // category stored as string (slug or name or id-string)
+              { 'category.slug': q },     // populated category object with slug
+              { 'category.name': q },     // populated category object with name
+              { categoryId: q },          // legacy field
+              { category_id: q },         // legacy field
+              { slug: q },                // series slug
+              { name: q }                 // series name
             ]
           };
           const fallbackList = await Series.find(flexibleFilter).sort({ order: 1 }).populate('category').lean();
           if (fallbackList && fallbackList.length) {
+            console.log('[server] /api/series fallback matched', fallbackList.length, 'items for category query:', qcat);
             return res.json(fallbackList);
           }
+          // 4) No matches at all
           return res.json([]);
         }
       }
     }
 
+    // Normal path: use `filter` which may have category:_id or be empty
     const list = await Series.find(filter).sort({ order: 1 }).populate('category').lean();
     res.json(list);
   } catch (err) {
@@ -109,8 +117,6 @@ app.get('/api/series', async (req, res) => {
     res.status(500).json({ error: 'Series load failed' });
   }
 });
-
-
 
 // GET models (optional ?series=SERIES_ID)
 app.get('/api/models', async (req, res) => {
@@ -216,11 +222,10 @@ app.post('/api/submit', async (req, res) => {
 });
 
 // ----------------- ADMIN CRUD WITH VALIDATION -----------------
+// (unchanged from your original; kept here for completeness)
 
-// Create category
 app.post('/admin/category', adminAuth, async (req, res) => {
   try {
-    // simple duplicate slug check
     if (req.body.slug) {
       const exists = await Category.findOne({ slug: req.body.slug });
       if (exists) return res.status(400).json({ error: 'Category slug already exists' });
@@ -254,14 +259,11 @@ app.delete('/admin/category/:id', adminAuth, async (req, res) => {
   }
 });
 
-// Series: require category and ensure series belongs to a single category
 app.post('/admin/series', adminAuth, async (req, res) => {
   try {
     if (!req.body.category) return res.status(400).json({ error: 'Series must have a category' });
-    // ensure category exists
     const cat = await Category.findById(req.body.category);
     if (!cat) return res.status(400).json({ error: 'Invalid category id' });
-    // prevent duplicate series slug inside same category
     if (req.body.slug) {
       const dup = await Series.findOne({ slug: req.body.slug, category: req.body.category });
       if (dup) return res.status(400).json({ error: 'Series slug already exists for this category' });
@@ -299,13 +301,11 @@ app.delete('/admin/series/:id', adminAuth, async (req, res) => {
   }
 });
 
-// Model: require series and ensure model belongs to exactly one series (no cross-listing)
 app.post('/admin/model', adminAuth, async (req, res) => {
   try {
     if (!req.body.series) return res.status(400).json({ error: 'Model must belong to a series' });
     const s = await Series.findById(req.body.series);
     if (!s) return res.status(400).json({ error: 'Invalid series id' });
-    // optional duplicate name/slug check inside same series
     if (req.body.slug) {
       const dup = await DeviceModel.findOne({ slug: req.body.slug, series: req.body.series });
       if (dup) return res.status(400).json({ error: 'Model slug already exists in this series' });
@@ -343,7 +343,6 @@ app.delete('/admin/model/:id', adminAuth, async (req, res) => {
   }
 });
 
-// Repair options CRUD (allowed to be global, models reference only the ones they use)
 app.post('/admin/repair', adminAuth, async (req, res) => {
   try {
     if (req.body.code) {

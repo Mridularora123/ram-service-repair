@@ -207,7 +207,6 @@
     seriesRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
   }
 
-
   function renderModelsPill(model) {
     if (!model) {
       modelPill.innerText = 'Select a model from the list...';
@@ -481,15 +480,15 @@
     if (!validateForm()) return;
     const payload = collectFormData();
     const btn = formWrap.querySelector('.' + ns + '-btn');
-    btn.disabled = true; btn.innerText = 'Sending...';
+    if (btn) { btn.disabled = true; btn.innerText = 'Sending...'; }
     apiPOST('/api/submit', payload).then(res => {
-      btn.disabled = false; btn.innerText = 'Request repair';
+      if (btn) { btn.disabled = false; btn.innerText = 'Request repair'; }
       clearChildren(mount);
       const okWrap = ce('div', ns + '-centerCol'); okWrap.style.padding = '30px 10px';
       okWrap.innerHTML = `<div style="text-align:center;padding:40px;"><h2>Thank you — request received</h2><p class="${ns}-muted">We created request <strong>${res.id || res._id || '—'}</strong>. Price: <strong>${res.price ? (Number.isInteger(res.price) ? (res.price / 100).toLocaleString() + ' €' : String(res.price)) : 'CALL_FOR_PRICE'}</strong></p></div>`;
       mount.appendChild(okWrap);
     }).catch(err => {
-      btn.disabled = false; btn.innerText = 'Request repair';
+      if (btn) { btn.disabled = false; btn.innerText = 'Request repair'; }
       console.error('submit err', err);
       alert('Submission failed: ' + (err && (err.error || err.message) ? (err.error || err.message) : 'Unknown error'));
     });
@@ -506,29 +505,28 @@
     });
   }
 
-  // NEW: load series for THIS category by passing category param (server will return only those series)
-  // NEW: load series for THIS category by passing category param (server will return only those series)
+  // Robust loadSeriesForCategory: tries strict server query, then flexible fallback queries and finally client-side filter.
   function loadSeriesForCategory(category) {
     if (!category) return;
     const param = encodeURIComponent(category.slug || category._id || category.name || '');
     console.log('[ramsvc] loadSeriesForCategory -> category param:', param, 'category object:', category);
 
-    // First try the strict server-side request
+    // Try strict server-side query first
     apiGET('/api/series?category=' + param).then(list => {
       console.log('[ramsvc] /api/series?category returned', list && list.length ? list.length : 0, 'items', list);
       state.series = list || [];
       renderSeries(state.series);
 
-      // If server returned nothing, try fallback: fetch all series then client-side filter
+      // If server gave nothing, try fallback: fetch all series then client-side filter
       if ((!list || list.length === 0) && (category._id || category.slug || category.name)) {
         console.warn('[ramsvc] empty result for strict query — attempting fallback to /api/series and client-side filter');
         apiGET('/api/series').then(all => {
           console.log('[ramsvc] fallback /api/series returned', all && all.length ? all.length : 0, 'items');
-          // filter where series.category equals category._id or equals category.slug/name (handles different doc shapes)
+
           const filtered = (all || []).filter(s => {
             if (!s) return false;
-            // series.category might be an ObjectId string OR populated object
             const sc = s.category;
+            // handle category stored as string id/slug/name
             if (!sc) return false;
             if (typeof sc === 'string') {
               return sc === String(category._id) || sc === category.slug || sc === category.name;
@@ -538,6 +536,7 @@
             }
             return false;
           });
+
           console.log('[ramsvc] fallback filtered series count:', filtered.length);
           state.series = filtered;
           renderSeries(state.series);
@@ -547,7 +546,7 @@
       }
     }).catch(err => {
       console.error('[ramsvc] /api/series?category error', err);
-      // try fallback too
+      // Try fallback: fetch all series and client-side filter
       apiGET('/api/series').then(all => {
         const filtered = (all || []).filter(s => {
           if (!s) return false;
@@ -564,7 +563,6 @@
       });
     });
   }
-
 
   function loadModelsForSeries(seriesId) {
     if (!seriesId) return;
