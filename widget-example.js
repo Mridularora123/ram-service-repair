@@ -180,7 +180,9 @@
     }
     clearChildren(seriesRow);
     if (!list || list.length === 0) {
-      // nothing to show
+      const noMsg = ce('div'); noMsg.style.padding = '18px'; noMsg.style.textAlign = 'center'; noMsg.style.width = '100%';
+      noMsg.innerText = 'No series found for this category.';
+      seriesRow.appendChild(noMsg);
       return;
     }
     list.forEach(s => {
@@ -204,6 +206,7 @@
     });
     seriesRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
   }
+
 
   function renderModelsPill(model) {
     if (!model) {
@@ -370,14 +373,14 @@
       const lab = ce('label'); lab.innerText = labelText; wrap.appendChild(lab);
       const inner = ce('div'); inner.style.display = 'flex'; inner.style.gap = '12px';
       opts.forEach(o => {
-        const lbl = ce('label'); lbl.style.fontWeight = '700'; lbl.style.display='flex'; lbl.style.alignItems='center'; lbl.style.gap='8px';
+        const lbl = ce('label'); lbl.style.fontWeight = '700'; lbl.style.display = 'flex'; lbl.style.alignItems = 'center'; lbl.style.gap = '8px';
         const r = ce('input'); r.type = 'radio'; r.name = name; r.value = o.value;
         lbl.appendChild(r); lbl.appendChild(document.createTextNode(o.label));
         inner.appendChild(lbl);
       });
       wrap.appendChild(inner); return wrap;
     };
-    radiosRow.appendChild(makeRadioGroup('Type of repair', 'repair_type', [{ value: 'warranty', label: 'Warranty' }, { value: 'out', label: 'Out of warranty' }] ));
+    radiosRow.appendChild(makeRadioGroup('Type of repair', 'repair_type', [{ value: 'warranty', label: 'Warranty' }, { value: 'out', label: 'Out of warranty' }]));
     radiosRow.appendChild(makeRadioGroup('Completed warranty card', 'warranty_card', [{ value: 'YES', label: 'YES' }, { value: 'NO', label: 'NO' }]));
     radiosRow.appendChild(makeRadioGroup('Invoice with IMEI', 'receipt', [{ value: 'YES', label: 'YES' }, { value: 'NO', label: 'NO' }]));
     formWrap.appendChild(radiosRow);
@@ -483,7 +486,7 @@
       btn.disabled = false; btn.innerText = 'Request repair';
       clearChildren(mount);
       const okWrap = ce('div', ns + '-centerCol'); okWrap.style.padding = '30px 10px';
-      okWrap.innerHTML = `<div style="text-align:center;padding:40px;"><h2>Thank you — request received</h2><p class="${ns}-muted">We created request <strong>${res.id || res._id || '—'}</strong>. Price: <strong>${res.price ? (Number.isInteger(res.price) ? (res.price/100).toLocaleString() + ' €' : String(res.price)) : 'CALL_FOR_PRICE'}</strong></p></div>`;
+      okWrap.innerHTML = `<div style="text-align:center;padding:40px;"><h2>Thank you — request received</h2><p class="${ns}-muted">We created request <strong>${res.id || res._id || '—'}</strong>. Price: <strong>${res.price ? (Number.isInteger(res.price) ? (res.price / 100).toLocaleString() + ' €' : String(res.price)) : 'CALL_FOR_PRICE'}</strong></p></div>`;
       mount.appendChild(okWrap);
     }).catch(err => {
       btn.disabled = false; btn.innerText = 'Request repair';
@@ -504,16 +507,64 @@
   }
 
   // NEW: load series for THIS category by passing category param (server will return only those series)
+  // NEW: load series for THIS category by passing category param (server will return only those series)
   function loadSeriesForCategory(category) {
     if (!category) return;
     const param = encodeURIComponent(category.slug || category._id || category.name || '');
+    console.log('[ramsvc] loadSeriesForCategory -> category param:', param, 'category object:', category);
+
+    // First try the strict server-side request
     apiGET('/api/series?category=' + param).then(list => {
+      console.log('[ramsvc] /api/series?category returned', list && list.length ? list.length : 0, 'items', list);
       state.series = list || [];
       renderSeries(state.series);
+
+      // If server returned nothing, try fallback: fetch all series then client-side filter
+      if ((!list || list.length === 0) && (category._id || category.slug || category.name)) {
+        console.warn('[ramsvc] empty result for strict query — attempting fallback to /api/series and client-side filter');
+        apiGET('/api/series').then(all => {
+          console.log('[ramsvc] fallback /api/series returned', all && all.length ? all.length : 0, 'items');
+          // filter where series.category equals category._id or equals category.slug/name (handles different doc shapes)
+          const filtered = (all || []).filter(s => {
+            if (!s) return false;
+            // series.category might be an ObjectId string OR populated object
+            const sc = s.category;
+            if (!sc) return false;
+            if (typeof sc === 'string') {
+              return sc === String(category._id) || sc === category.slug || sc === category.name;
+            } else if (typeof sc === 'object') {
+              // populated object
+              return String(sc._id || sc.id || sc) === String(category._id) || (sc.slug && sc.slug === category.slug) || (sc.name && sc.name === category.name);
+            }
+            return false;
+          });
+          console.log('[ramsvc] fallback filtered series count:', filtered.length);
+          state.series = filtered;
+          renderSeries(state.series);
+        }).catch(err => {
+          console.error('[ramsvc] fallback /api/series failed', err);
+        });
+      }
     }).catch(err => {
-      console.error('series err', err);
+      console.error('[ramsvc] /api/series?category error', err);
+      // try fallback too
+      apiGET('/api/series').then(all => {
+        const filtered = (all || []).filter(s => {
+          if (!s) return false;
+          const sc = s.category;
+          if (!sc) return false;
+          if (typeof sc === 'string') return sc === String(category._id) || sc === category.slug || sc === category.name;
+          else if (typeof sc === 'object') return String(sc._id || sc.id || sc) === String(category._id) || (sc.slug && sc.slug === category.slug) || (sc.name && sc.name === category.name);
+          return false;
+        });
+        state.series = filtered;
+        renderSeries(state.series);
+      }).catch(e2 => {
+        console.error('[ramsvc] fallback /api/series also failed', e2);
+      });
     });
   }
+
 
   function loadModelsForSeries(seriesId) {
     if (!seriesId) return;

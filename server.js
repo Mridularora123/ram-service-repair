@@ -56,28 +56,58 @@ app.get('/api/categories', async (req, res) => {
   }
 });
 
-// GET series (optional ?category=slugOrId)
+// GET series (optional ?category=slugOrId) — robust + fallback
 app.get('/api/series', async (req, res) => {
   try {
+    const qcat = req.query.category;
     const filter = {};
-    if (req.query.category) {
-      const cat = req.query.category;
-      // accept id or slug or name
-      if (/^[0-9a-fA-F]{24}$/.test(String(cat))) {
-        filter.category = cat;
+
+    if (qcat) {
+      // 1) If client passed an ObjectId-like value, assume it's an id
+      if (/^[0-9a-fA-F]{24}$/.test(String(qcat))) {
+        filter.category = qcat;
       } else {
-        const found = await Category.findOne({ $or: [{ slug: cat }, { name: cat }] }).lean();
-        if (!found) return res.json([]); // no series for unknown category
-        filter.category = found._id;
+        // 2) Try to find a Category by slug or name
+        const found = await Category.findOne({ $or: [{ slug: qcat }, { name: qcat }] }).lean();
+        if (found) {
+          filter.category = found._id;
+        } else {
+          // 3) If no Category found, fall back to flexible series matching:
+          //    series documents might store category as slug string, name string,
+          //    populated object, or ObjectId string. We'll construct an $or query
+          //    that covers typical shapes.
+          const q = qcat;
+          const flexibleFilter = {
+            $or: [
+              { category: q },                    // category stored as slug or name string
+              { 'category.slug': q },             // populated category object with slug
+              { 'category.name': q },             // populated category object with name
+              { slug: q },                        // series slug equals q
+              { name: q }                         // series name equals q
+            ]
+          };
+          const fallbackList = await Series.find(flexibleFilter).sort({ order: 1 }).populate('category').lean();
+          // If we found matches via fallback, return them now.
+          if (fallbackList && fallbackList.length) {
+            console.log('[server] /api/series fallback matched', fallbackList.length, 'items for category query:', qcat);
+            return res.json(fallbackList);
+          }
+          // else return empty (no series matched)
+          console.log('[server] /api/series - no category found and fallback returned 0 for:', qcat);
+          return res.json([]);
+        }
       }
     }
-    const list = await Series.find(filter).sort({ order: 1 }).lean();
+
+    // Normal path: query by filter (may include category ObjectId)
+    const list = await Series.find(filter).sort({ order: 1 }).populate('category').lean();
     res.json(list);
   } catch (err) {
     console.error('series err', err);
     res.status(500).json({ error: 'Series load failed' });
   }
 });
+
 
 // GET models (optional ?series=SERIES_ID)
 app.get('/api/models', async (req, res) => {
