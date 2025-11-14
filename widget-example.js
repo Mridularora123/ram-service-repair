@@ -1,5 +1,4 @@
-// widget-example.js
-// RAM Service Repair storefront widget
+// RAM Service Repair storefront widget (updated to strict Category->Series->Model->Repairs flow)
 (function () {
   // ---- CONFIG ----------
   const API_BASE = (window.RAM_SERVICE_API_BASE || '').replace(/\/$/, '') || 'https://ram-service-repair1.onrender.com';
@@ -159,8 +158,8 @@
         state.selectedCategory = cat;
         qa('.' + ns + '-tile', categoryGrid).forEach(c => c.classList.remove('selected'));
         t.classList.add('selected');
-        // fetch series (uses /api/series server endpoint)
-        loadSeries(cat);
+        // fetch series for THIS category (strict)
+        loadSeriesForCategory(cat);
         // reset downstream
         state.selectedSeries = null; state.models = []; state.selectedModel = null; state.repairs = []; state.selectedRepair = null;
         renderModelsPill(null);
@@ -181,6 +180,7 @@
     }
     clearChildren(seriesRow);
     if (!list || list.length === 0) {
+      // nothing to show
       return;
     }
     list.forEach(s => {
@@ -192,7 +192,7 @@
         state.selectedSeries = s;
         qa('.' + ns + '-tile', seriesRow).forEach(c => c.classList.remove('selected'));
         t.classList.add('selected');
-        // load models for series
+        // load models for series (strict)
         loadModelsForSeries(s._id);
         // reset
         state.selectedModel = null; state.repairs = []; state.selectedRepair = null;
@@ -213,6 +213,9 @@
       modelPill.onclick = () => {
         if (state.models && state.models.length) {
           openModelSelect();
+        } else {
+          // no models loaded yet
+          alert('Please choose a series first.');
         }
       };
       return;
@@ -240,6 +243,7 @@
       btn.onclick = () => {
         state.selectedModel = m;
         renderModelsPill(m);
+        // load repairs for this model strictly
         loadRepairsForModel(m._id || m.slug || m.name);
         popup.remove();
       };
@@ -373,7 +377,7 @@
       });
       wrap.appendChild(inner); return wrap;
     };
-    radiosRow.appendChild(makeRadioGroup('Type of repair', 'repair_type', [{ value: 'warranty', label: 'Warranty' }, { value: 'out', label: 'Out of warranty' }]));
+    radiosRow.appendChild(makeRadioGroup('Type of repair', 'repair_type', [{ value: 'warranty', label: 'Warranty' }, { value: 'out', label: 'Out of warranty' }] ));
     radiosRow.appendChild(makeRadioGroup('Completed warranty card', 'warranty_card', [{ value: 'YES', label: 'YES' }, { value: 'NO', label: 'NO' }]));
     radiosRow.appendChild(makeRadioGroup('Invoice with IMEI', 'receipt', [{ value: 'YES', label: 'YES' }, { value: 'NO', label: 'NO' }]));
     formWrap.appendChild(radiosRow);
@@ -499,15 +503,13 @@
     });
   }
 
-  function loadSeries(category) {
-    apiGET('/api/series').then(list => {
-      const filtered = (list || []).filter(s => {
-        if (!category) return true;
-        if (!s.category) return true;
-        return s.category === category.slug || s.category === category._id || (s.category && s.category._id === category._id);
-      });
-      state.series = filtered;
-      renderSeries(filtered);
+  // NEW: load series for THIS category by passing category param (server will return only those series)
+  function loadSeriesForCategory(category) {
+    if (!category) return;
+    const param = encodeURIComponent(category.slug || category._id || category.name || '');
+    apiGET('/api/series?category=' + param).then(list => {
+      state.series = list || [];
+      renderSeries(state.series);
     }).catch(err => {
       console.error('series err', err);
     });

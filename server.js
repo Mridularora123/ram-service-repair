@@ -1,4 +1,3 @@
-// server.js — full server (overwrite your existing server.js with this)
 require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
@@ -16,19 +15,17 @@ const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
-// Serve widget file (you already have widget-example.js in project root)
+// Serve widget file
 app.get('/widget.js', (req, res) => {
   res.type('application/javascript');
   res.sendFile(path.join(__dirname, 'widget-example.js'));
 });
 
-// Optional embed snippet endpoint (returns a small script you can paste in Shopify)
 app.get('/embed', (req, res) => {
   const envAppUrl = (process.env.APP_URL || '').replace(/\/$/, '');
   const host = envAppUrl || `${req.protocol}://${req.get('host')}`;
   const script = `<script>(function(){var s=document.createElement('script');s.src='${host}/widget.js';s.async=true;var mount=document.getElementById('ram-service-widget'); if(!mount){mount=document.createElement('div');mount.id='ram-service-widget';document.body.appendChild(mount);} mount.appendChild(s); })();</script>`;
-  res.type('text/html');
-  res.send(script);
+  res.type('text/html'); res.send(script);
 });
 
 app.get('/_health', (req, res) => res.json({ ok: true }));
@@ -65,11 +62,12 @@ app.get('/api/series', async (req, res) => {
     const filter = {};
     if (req.query.category) {
       const cat = req.query.category;
+      // accept id or slug or name
       if (/^[0-9a-fA-F]{24}$/.test(String(cat))) {
         filter.category = cat;
       } else {
         const found = await Category.findOne({ $or: [{ slug: cat }, { name: cat }] }).lean();
-        if (!found) return res.json([]);
+        if (!found) return res.json([]); // no series for unknown category
         filter.category = found._id;
       }
     }
@@ -81,19 +79,11 @@ app.get('/api/series', async (req, res) => {
   }
 });
 
-// GET models (optional ?series=SERIES_ID or ?category=slugOrId)
+// GET models (optional ?series=SERIES_ID)
 app.get('/api/models', async (req, res) => {
   try {
     const filter = {};
     if (req.query.series) filter.series = req.query.series;
-    if (req.query.category) {
-      const cat = req.query.category;
-      if (/^[0-9a-fA-F]{24}$/.test(String(cat))) filter.category = cat;
-      else {
-        const found = await Category.findOne({ $or: [{ slug: cat }, { name: cat }] }).lean();
-        if (found) filter.category = found._id;
-      }
-    }
     const models = await DeviceModel.find(filter).sort({ order: 1 }).populate('repairs').lean();
     res.json(models);
   } catch (err) {
@@ -124,7 +114,8 @@ app.get('/api/repairs', async (req, res) => {
       if (model) {
         // if model.repairs exists, limit to those
         if (Array.isArray(model.repairs) && model.repairs.length) {
-          repairs = repairs.filter(r => model.repairs.some(rr => String(rr) === String(r._id)));
+          const allowedIds = model.repairs.map(r => String(r));
+          repairs = repairs.filter(r => allowedIds.includes(String(r._id)));
         }
         // compute priceEffective for each repair based on model overrides
         repairs = repairs.map(r => {
@@ -191,62 +182,168 @@ app.post('/api/submit', async (req, res) => {
   }
 });
 
-// ----------------- ADMIN CRUD -----------------
-// Create category / series / model / repair via simple admin endpoints (x-admin-password required)
+// ----------------- ADMIN CRUD WITH VALIDATION -----------------
+
+// Create category
 app.post('/admin/category', adminAuth, async (req, res) => {
-  const doc = new Category(req.body);
-  await doc.save();
-  res.json(doc);
+  try {
+    // simple duplicate slug check
+    if (req.body.slug) {
+      const exists = await Category.findOne({ slug: req.body.slug });
+      if (exists) return res.status(400).json({ error: 'Category slug already exists' });
+    }
+    const doc = new Category(req.body);
+    await doc.save();
+    res.json(doc);
+  } catch (err) {
+    console.error('admin category create err', err);
+    res.status(500).json({ error: 'Category create failed' });
+  }
 });
+
 app.put('/admin/category/:id', adminAuth, async (req, res) => {
-  const doc = await Category.findByIdAndUpdate(req.params.id, req.body, { new: true });
-  res.json(doc);
+  try {
+    const doc = await Category.findByIdAndUpdate(req.params.id, req.body, { new: true });
+    res.json(doc);
+  } catch (err) {
+    console.error('admin category update err', err);
+    res.status(500).json({ error: 'Category update failed' });
+  }
 });
+
 app.delete('/admin/category/:id', adminAuth, async (req, res) => {
-  await Category.findByIdAndDelete(req.params.id);
-  res.json({ ok: true });
+  try {
+    await Category.findByIdAndDelete(req.params.id);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('admin category delete err', err);
+    res.status(500).json({ error: 'Category delete failed' });
+  }
 });
 
+// Series: require category and ensure series belongs to a single category
 app.post('/admin/series', adminAuth, async (req, res) => {
-  const doc = new Series(req.body);
-  await doc.save();
-  res.json(doc);
+  try {
+    if (!req.body.category) return res.status(400).json({ error: 'Series must have a category' });
+    // ensure category exists
+    const cat = await Category.findById(req.body.category);
+    if (!cat) return res.status(400).json({ error: 'Invalid category id' });
+    // prevent duplicate series slug inside same category
+    if (req.body.slug) {
+      const dup = await Series.findOne({ slug: req.body.slug, category: req.body.category });
+      if (dup) return res.status(400).json({ error: 'Series slug already exists for this category' });
+    }
+    const doc = new Series(req.body);
+    await doc.save();
+    res.json(doc);
+  } catch (err) {
+    console.error('admin series create err', err);
+    res.status(500).json({ error: 'Series create failed' });
+  }
 });
+
 app.put('/admin/series/:id', adminAuth, async (req, res) => {
-  const doc = await Series.findByIdAndUpdate(req.params.id, req.body, { new: true });
-  res.json(doc);
+  try {
+    if (req.body.category) {
+      const cat = await Category.findById(req.body.category);
+      if (!cat) return res.status(400).json({ error: 'Invalid category id' });
+    }
+    const doc = await Series.findByIdAndUpdate(req.params.id, req.body, { new: true });
+    res.json(doc);
+  } catch (err) {
+    console.error('admin series update err', err);
+    res.status(500).json({ error: 'Series update failed' });
+  }
 });
+
 app.delete('/admin/series/:id', adminAuth, async (req, res) => {
-  await Series.findByIdAndDelete(req.params.id);
-  res.json({ ok: true });
+  try {
+    await Series.findByIdAndDelete(req.params.id);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('admin series delete err', err);
+    res.status(500).json({ error: 'Series delete failed' });
+  }
 });
 
+// Model: require series and ensure model belongs to exactly one series (no cross-listing)
 app.post('/admin/model', adminAuth, async (req, res) => {
-  const doc = new DeviceModel(req.body);
-  await doc.save();
-  res.json(doc);
-});
-app.put('/admin/model/:id', adminAuth, async (req, res) => {
-  const doc = await DeviceModel.findByIdAndUpdate(req.params.id, req.body, { new: true });
-  res.json(doc);
-});
-app.delete('/admin/model/:id', adminAuth, async (req, res) => {
-  await DeviceModel.findByIdAndDelete(req.params.id);
-  res.json({ ok: true });
+  try {
+    if (!req.body.series) return res.status(400).json({ error: 'Model must belong to a series' });
+    const s = await Series.findById(req.body.series);
+    if (!s) return res.status(400).json({ error: 'Invalid series id' });
+    // optional duplicate name/slug check inside same series
+    if (req.body.slug) {
+      const dup = await DeviceModel.findOne({ slug: req.body.slug, series: req.body.series });
+      if (dup) return res.status(400).json({ error: 'Model slug already exists in this series' });
+    }
+    const doc = new DeviceModel(req.body);
+    await doc.save();
+    res.json(doc);
+  } catch (err) {
+    console.error('admin model create err', err);
+    res.status(500).json({ error: 'Model create failed' });
+  }
 });
 
+app.put('/admin/model/:id', adminAuth, async (req, res) => {
+  try {
+    if (req.body.series) {
+      const s = await Series.findById(req.body.series);
+      if (!s) return res.status(400).json({ error: 'Invalid series id' });
+    }
+    const doc = await DeviceModel.findByIdAndUpdate(req.params.id, req.body, { new: true });
+    res.json(doc);
+  } catch (err) {
+    console.error('admin model update err', err);
+    res.status(500).json({ error: 'Model update failed' });
+  }
+});
+
+app.delete('/admin/model/:id', adminAuth, async (req, res) => {
+  try {
+    await DeviceModel.findByIdAndDelete(req.params.id);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('admin model delete err', err);
+    res.status(500).json({ error: 'Model delete failed' });
+  }
+});
+
+// Repair options CRUD (allowed to be global, models reference only the ones they use)
 app.post('/admin/repair', adminAuth, async (req, res) => {
-  const doc = new RepairOption(req.body);
-  await doc.save();
-  res.json(doc);
+  try {
+    if (req.body.code) {
+      const dup = await RepairOption.findOne({ code: req.body.code });
+      if (dup) return res.status(400).json({ error: 'Repair code already exists' });
+    }
+    const doc = new RepairOption(req.body);
+    await doc.save();
+    res.json(doc);
+  } catch (err) {
+    console.error('admin repair create err', err);
+    res.status(500).json({ error: 'Repair create failed' });
+  }
 });
+
 app.put('/admin/repair/:id', adminAuth, async (req, res) => {
-  const doc = await RepairOption.findByIdAndUpdate(req.params.id, req.body, { new: true });
-  res.json(doc);
+  try {
+    const doc = await RepairOption.findByIdAndUpdate(req.params.id, req.body, { new: true });
+    res.json(doc);
+  } catch (err) {
+    console.error('admin repair update err', err);
+    res.status(500).json({ error: 'Repair update failed' });
+  }
 });
+
 app.delete('/admin/repair/:id', adminAuth, async (req, res) => {
-  await RepairOption.findByIdAndDelete(req.params.id);
-  res.json({ ok: true });
+  try {
+    await RepairOption.findByIdAndDelete(req.params.id);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('admin repair delete err', err);
+    res.status(500).json({ error: 'Repair delete failed' });
+  }
 });
 
 const PORT = process.env.PORT || 4000;
