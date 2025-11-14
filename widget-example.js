@@ -1,5 +1,5 @@
 // widget-example.js
-// RAM Service Repair storefront widget (Category -> Series -> Model -> Repairs flow)
+// RAM Service Repair storefront widget with robust fallbacks and debug overlay
 (function () {
   // ---- CONFIG ----------
   const API_BASE = (window.RAM_SERVICE_API_BASE || '').replace(/\/$/, '') || 'https://ram-service-repair1.onrender.com';
@@ -22,21 +22,45 @@
   };
 
   function apiGET(path) {
-    return fetch(API_BASE + path, { credentials: 'omit' })
+    const url = API_BASE + path;
+    dbgLog('apiGET', url);
+    return fetch(url, { credentials: 'omit' })
       .then(r => {
-        if (!r.ok) throw new Error('Network error ' + r.status);
+        dbgLog('apiGET.status', r.status, url);
+        if (!r.ok) throw new Error('Network error ' + r.status + ' ' + url);
         return r.json();
       });
   }
   function apiPOST(path, body) {
-    return fetch(API_BASE + path, {
+    const url = API_BASE + path;
+    dbgLog('apiPOST', url, body);
+    return fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     }).then(r => {
+      dbgLog('apiPOST.status', r.status, url);
       if (!r.ok) return r.json().then(j => { throw j; });
       return r.json();
     });
+  }
+
+  // ---- debug panel ----
+  const dbgState = { lines: [] };
+  function dbgLog(...args) {
+    try {
+      const t = new Date().toLocaleTimeString();
+      const line = `[${t}] ${args.map(a => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ')}`;
+      dbgState.lines.push(line);
+      if (dbgState.lines.length > 30) dbgState.lines.shift();
+      updateDbgPanel();
+      // also console
+      console.log(...args);
+    } catch (e) { /* ignore */ }
+  }
+  function updateDbgPanel() {
+    if (!dbgPanel) return;
+    dbgPanelContent.textContent = dbgState.lines.join('\n');
   }
 
   // ---- inject CSS ----
@@ -67,16 +91,12 @@
   #${mountId} .${ns}-summaryTitle{font-weight:800;margin:0 0 6px 0;font-size:15px;}
   #${mountId} .${ns}-summaryPrice{font-size:22px;font-weight:900;}
   #${mountId} .${ns}-hidden{display:none;}
-  @media (max-width:980px){
-    #${mountId} .${ns}-tile{width:45%;}
-    #${mountId} .${ns}-col{min-width:100%;}
-    #${mountId} .${ns}-pill{min-width:300px;}
-  }
-  @media (max-width:480px){
-    #${mountId} .${ns}-tile{width:100%;height:180px;}
-    #${mountId} .${ns}-grid{gap:12px;}
-    #${mountId} .${ns}-pill{min-width:200px;padding:10px 16px;}
-  }
+  /* debug overlay */
+  #${mountId} .${ns}-dbg { position: fixed; right: 12px; bottom: 12px; width: 360px; max-height: 260px; overflow:auto; background: rgba(0,0,0,0.85); color: #dfe; padding: 10px; border-radius: 8px; font-family: monospace; font-size: 12px; z-index: 999999; box-shadow:0 10px 30px rgba(0,0,0,0.6); }
+  #${mountId} .${ns}-dbg pre { white-space: pre-wrap; margin:0; padding:0; color:#cfe; }
+  #${mountId} .${ns}-dbg .title { font-weight:800; margin-bottom:6px; color:#fff; font-size:13px;}
+  #${mountId} .${ns}-notice { text-align:center; color:#a00; font-weight:700; margin-top:8px; }
+  @media (max-width:480px){ #${mountId} .${ns}-dbg { width: 92%; right:4%; left:4%; } }
   `;
   const style = ce('style'); style.innerText = css; document.head.appendChild(style);
 
@@ -108,6 +128,10 @@
   modelPanel.appendChild(modelPill);
   centerCol.appendChild(modelPanel);
 
+  // small notice area (when models empty after selecting series)
+  const notice = ce('div'); notice.className = ns + '-notice'; notice.style.display = 'none';
+  modelPanel.appendChild(notice);
+
   // damage types
   const damagePanel = ce('div', ns + '-panel');
   const damageTitle = ce('div'); damageTitle.className = ns + '-headingTop'; damageTitle.innerText = 'Select type of injury';
@@ -127,6 +151,13 @@
   const formWrap = ce('div', ns + '-form');
   formWrap.classList.add(ns + '-hidden');
   centerCol.appendChild(formWrap);
+
+  // debug panel nodes
+  const dbgPanel = ce('div', ns + '-dbg');
+  dbgPanel.innerHTML = `<div class="title">Widget debug (API_BASE=${API_BASE})</div><pre id="${ns}-dbg-pre"></pre>`;
+  document.body.appendChild(dbgPanel);
+  const dbgPanelContent = q('#' + ns + '-dbg-pre');
+  updateDbgPanel();
 
   // state
   const state = {
@@ -160,6 +191,7 @@
         qa('.' + ns + '-tile', categoryGrid).forEach(c => c.classList.remove('selected'));
         t.classList.add('selected');
         // fetch series for THIS category (strict)
+        notice.style.display = 'none';
         loadSeriesForCategory(cat);
         // reset downstream
         state.selectedSeries = null; state.models = []; state.selectedModel = null; state.repairs = []; state.selectedRepair = null;
@@ -196,6 +228,7 @@
         qa('.' + ns + '-tile', seriesRow).forEach(c => c.classList.remove('selected'));
         t.classList.add('selected');
         // load models for series (strict)
+        notice.style.display = 'none';
         loadModelsForSeries(s._id);
         // reset
         state.selectedModel = null; state.repairs = []; state.selectedRepair = null;
@@ -208,7 +241,6 @@
     seriesRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
   }
 
-
   function renderModelsPill(model) {
     if (!model) {
       modelPill.innerText = 'Select a model from the list...';
@@ -218,8 +250,10 @@
         if (state.models && state.models.length) {
           openModelSelect();
         } else {
-          // no models loaded yet
-          alert('Please choose a series first.');
+          // no models loaded yet -> display inline notice and keep debug
+          notice.innerText = 'No models found for this series. Check debug panel for API responses.';
+          notice.style.display = 'block';
+          dbgLog('UI', 'Model pill clicked but no models loaded', { selectedSeries: state.selectedSeries });
         }
       };
       return;
@@ -501,70 +535,57 @@
     apiGET('/api/categories').then(list => {
       state.categories = list || [];
       renderCategories();
+      dbgLog('loaded categories', (list || []).length);
     }).catch(err => {
       console.error('categories err', err);
       categoryGrid.innerText = 'Failed to load categories';
+      dbgLog('categories err', String(err));
     });
   }
 
-  // Robust loadSeriesForCategory: tries strict server query, then flexible fallback queries and finally client-side filter.
+  // loadSeriesForCategory (same robust logic as before)
   function loadSeriesForCategory(category) {
     if (!category) return;
-    // use slug if available, else id, else name
     const param = encodeURIComponent(category.slug || category._id || category.name || '');
-    console.log('[ramsvc] loadSeriesForCategory -> category param:', param, 'category object:', category);
-
-    // Try strict server-side query first
+    dbgLog('loadSeriesForCategory param', param, category);
     apiGET('/api/series?category=' + param).then(list => {
-      console.log('[ramsvc] /api/series?category returned', list && list.length ? list.length : 0, 'items', list);
+      dbgLog('/api/series?category returned', (list || []).length);
       state.series = list || [];
       renderSeries(state.series);
-
-      // If server gave nothing, try fallback: fetch all series then client-side filter
+      // client fallback if no series on strict query
       if ((!list || list.length === 0) && (category._id || category.slug || category.name)) {
-        console.warn('[ramsvc] empty result for strict query — attempting fallback to /api/series and client-side filter');
+        dbgLog('strict series empty, fallback to /api/series client filter');
         apiGET('/api/series').then(all => {
-          console.log('[ramsvc] fallback /api/series returned', all && all.length ? all.length : 0, 'items');
-
+          dbgLog('fallback /api/series returned', (all || []).length);
           const filtered = (all || []).filter(s => {
             if (!s) return false;
-
-            // Accept many shapes: s.category (string or populated object), s.categoryId, s.category_id etc.
             const scCandidates = [];
-
             if (s.category !== undefined) scCandidates.push(s.category);
             if (s.categoryId !== undefined) scCandidates.push(s.categoryId);
             if (s.category_id !== undefined) scCandidates.push(s.category_id);
-
-            if (s.category && typeof s.category === 'object') {
-              scCandidates.push(s.category._id || s.category.id || s.category.slug || s.category.name);
-            }
-
-            scCandidates.push(s.slug);
-            scCandidates.push(s.name);
-
+            if (s.category && typeof s.category === 'object') scCandidates.push(s.category._id || s.category.id || s.category.slug || s.category.name);
+            scCandidates.push(s.slug); scCandidates.push(s.name);
             const catIdStr = String(category._id || category.id || category).toLowerCase();
             const catSlug = (category.slug || '').toLowerCase();
             const catName = (category.name || '').toLowerCase();
-
             return scCandidates.some(c => {
               if (c === null || c === undefined) return false;
               const cs = String(c).toLowerCase();
               return cs === catIdStr || cs === catSlug || cs === catName;
             });
           });
-
-          console.log('[ramsvc] fallback filtered series count:', filtered.length);
+          dbgLog('fallback filtered series count', filtered.length);
           state.series = filtered;
           renderSeries(state.series);
-        }).catch(err => {
-          console.error('[ramsvc] fallback /api/series failed', err);
+        }).catch(e => {
+          dbgLog('fallback /api/series error', String(e));
         });
       }
     }).catch(err => {
-      console.error('[ramsvc] /api/series?category error', err);
-      // Try fallback: fetch all series and client-side filter
+      dbgLog('/api/series?category error', String(err));
+      // fallback to all series + filter same way
       apiGET('/api/series').then(all => {
+        dbgLog('fallback /api/series returned', (all || []).length);
         const filtered = (all || []).filter(s => {
           if (!s) return false;
           const scCandidates = [];
@@ -582,30 +603,110 @@
             return cs === catIdStr || cs === catSlug || cs === catName;
           });
         });
+        dbgLog('fallback filtered series count', filtered.length);
         state.series = filtered;
         renderSeries(state.series);
       }).catch(e2 => {
-        console.error('[ramsvc] fallback /api/series also failed', e2);
+        dbgLog('fallback /api/series also failed', String(e2));
       });
     });
   }
 
+  // Robust models loader:
+  // 1) Try /api/series/:id/models
+  // 2) If empty/fail -> GET /api/models and client-side filter by many possible shapes
   function loadModelsForSeries(seriesId) {
     if (!seriesId) return;
+    dbgLog('loadModelsForSeries', seriesId);
     apiGET('/api/series/' + encodeURIComponent(seriesId) + '/models').then(list => {
+      dbgLog('/api/series/:id/models returned', (list || []).length);
       state.models = list || [];
       renderModelsPill(null);
+      if ((!list || list.length === 0)) {
+        // fallback to /api/models and filter client-side
+        dbgLog('models empty, fallback to /api/models and client filter');
+        apiGET('/api/models').then(all => {
+          dbgLog('/api/models returned', (all || []).length);
+          const filtered = (all || []).filter(m => {
+            if (!m) return false;
+            const candidates = [];
+            if (m.series !== undefined) candidates.push(m.series);
+            if (m.seriesId !== undefined) candidates.push(m.seriesId);
+            if (m.series_id !== undefined) candidates.push(m.series_id);
+            if (m.series && typeof m.series === 'object') candidates.push(m.series._id || m.series.id || m.series.slug || m.series.name);
+            if (m.slug) candidates.push(m.slug);
+            if (m.name) candidates.push(m.name);
+            const sIdStr = String(seriesId).toLowerCase();
+            const sSlug = (state.selectedSeries && state.selectedSeries.slug || '').toLowerCase();
+            const sName = (state.selectedSeries && state.selectedSeries.name || '').toLowerCase();
+            return candidates.some(c => {
+              if (c === null || c === undefined) return false;
+              const cs = String(c).toLowerCase();
+              return cs === sIdStr || cs === sSlug || cs === sName;
+            });
+          });
+          dbgLog('models fallback filtered count', filtered.length);
+          state.models = filtered;
+          renderModelsPill(null);
+          if (!filtered.length) {
+            notice.innerText = 'No models found for this series. Open debug to see API responses.';
+            notice.style.display = 'block';
+          } else {
+            notice.style.display = 'none';
+          }
+        }).catch(e => {
+          dbgLog('/api/models fallback error', String(e));
+        });
+      } else {
+        notice.style.display = 'none';
+      }
     }).catch(err => {
-      console.error('models for series err', err);
+      dbgLog('/api/series/:id/models error', String(err));
+      // fallback to /api/models
+      apiGET('/api/models').then(all => {
+        dbgLog('/api/models returned (after error)', (all || []).length);
+        const filtered = (all || []).filter(m => {
+          if (!m) return false;
+          const candidates = [];
+          if (m.series !== undefined) candidates.push(m.series);
+          if (m.seriesId !== undefined) candidates.push(m.seriesId);
+          if (m.series_id !== undefined) candidates.push(m.series_id);
+          if (m.series && typeof m.series === 'object') candidates.push(m.series._id || m.series.id || m.series.slug || m.series.name);
+          if (m.slug) candidates.push(m.slug);
+          if (m.name) candidates.push(m.name);
+          const sIdStr = String(seriesId).toLowerCase();
+          const sSlug = (state.selectedSeries && state.selectedSeries.slug || '').toLowerCase();
+          const sName = (state.selectedSeries && state.selectedSeries.name || '').toLowerCase();
+          return candidates.some(c => {
+            if (c === null || c === undefined) return false;
+            const cs = String(c).toLowerCase();
+            return cs === sIdStr || cs === sSlug || cs === sName;
+          });
+        });
+        dbgLog('models fallback filtered count (after error)', filtered.length);
+        state.models = filtered;
+        renderModelsPill(null);
+        if (!filtered.length) {
+          notice.innerText = 'No models found for this series. Open debug to see API responses.';
+          notice.style.display = 'block';
+        } else {
+          notice.style.display = 'none';
+        }
+      }).catch(e2 => {
+        dbgLog('fallback /api/models error', String(e2));
+      });
     });
   }
 
   function loadRepairsForModel(modelId) {
     if (!modelId) return;
+    dbgLog('loadRepairsForModel', modelId);
     apiGET('/api/repairs?modelId=' + encodeURIComponent(modelId)).then(list => {
+      dbgLog('/api/repairs?modelId returned', (list || []).length);
       state.repairs = list || [];
       renderRepairs(state.repairs);
     }).catch(err => {
+      dbgLog('repairs err', String(err));
       console.error('repairs err', err);
       damageGrid.innerText = 'Failed to load repairs';
     });
