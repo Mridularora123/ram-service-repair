@@ -1,10 +1,10 @@
-// widget-example.js
-// RAM Service Repair storefront widget (Category -> Series -> Model -> Repairs)
+// widget-example.js (updated: safer model-loading + better UX)
 (function () {
   // ---- CONFIG ----------
   const API_BASE = (window.RAM_SERVICE_API_BASE || '').replace(/\/$/, '') || 'https://ram-service-repair1.onrender.com';
   const mountId = 'ram-service-widget';
   const ns = 'ramsvc'; // CSS namespace
+  const DEBUG = true;
 
   // ---- helpers ----
   const q = (s, p = document) => p.querySelector(s);
@@ -20,6 +20,10 @@
     if (!isNaN(Number(v))) return Number(v).toLocaleString() + ' €';
     return String(v);
   };
+
+  function log(...args) { if (DEBUG) console.log('[ramsvc]', ...args); }
+  function warn(...args) { if (DEBUG) console.warn('[ramsvc]', ...args); }
+  function errLog(...args) { if (DEBUG) console.error('[ramsvc]', ...args); }
 
   function apiGET(path) {
     return fetch(API_BASE + path, { credentials: 'omit' })
@@ -54,6 +58,7 @@
   #${mountId} .${ns}-tile img{max-height:96px;max-width:120px;object-fit:contain;margin-bottom:10px;opacity:.98;}
   #${mountId} .${ns}-tile h4{margin:0;font-size:15px;font-weight:700;text-align:center;color:#0b1724;}
   #${mountId} .${ns}-pill{display:inline-block;border-radius:999px;padding:12px 30px;border:2px solid #061130;background:#fff;font-weight:700;margin:12px auto;cursor:pointer;min-width:360px;max-width:90%;text-align:center;}
+  #${mountId} .${ns}-pill.loading{opacity:.6;background:#f2f4f6;cursor:progress;}
   #${mountId} .${ns}-priceCard{background:#eef6ff;padding:20px;border-radius:10px;display:flex;gap:18px;align-items:center;justify-content:space-between;border:1px solid rgba(10,20,40,0.04);}
   #${mountId} .${ns}-form{max-width:1000px;margin:18px auto 0;background:#eef6ff;padding:22px;border-radius:10px;border:1px solid rgba(10,20,40,0.04);}
   #${mountId} .${ns}-row{display:flex;gap:14px;flex-wrap:wrap;}
@@ -83,7 +88,7 @@
   // ---- build skeleton ----
   const mount = document.getElementById(mountId);
   if (!mount) {
-    console.error('RAM Service widget: missing mount element with id #' + mountId);
+    errLog('missing mount element with id #' + mountId);
     return;
   }
   mount.classList.add(ns + '-wrap');
@@ -138,7 +143,8 @@
     selectedModel: null,
     repairs: [],
     selectedRepair: null,
-    price: null
+    price: null,
+    loadingModels: false
   };
 
   // ---- render functions ----
@@ -152,8 +158,7 @@
     state.categories.forEach(cat => {
       const t = ce('div', ns + '-tile');
       t.setAttribute('data-slug', cat.slug || '');
-      const img = ce('img'); img.src = cat.iconUrl || cat.image || '';
-      img.alt = cat.name || '';
+      const img = ce('img'); img.src = cat.iconUrl || cat.image || ''; img.alt = cat.name || '';
       const h = ce('h4'); h.innerText = cat.name;
       t.appendChild(img); t.appendChild(h);
       t.onclick = () => {
@@ -189,8 +194,7 @@
     }
     list.forEach(s => {
       const t = ce('div', ns + '-tile');
-      const img = ce('img'); img.src = s.iconUrl || s.image || '';
-      img.alt = s.name || '';
+      const img = ce('img'); img.src = s.iconUrl || s.image || ''; img.alt = s.name || '';
       const h = ce('h4'); h.innerText = s.name;
       t.appendChild(img); t.appendChild(h);
       t.onclick = () => {
@@ -212,25 +216,40 @@
 
   function renderModelsPill(model) {
     if (!model) {
-      modelPill.innerText = 'Select a model from the list...';
+      modelPill.innerText = state.loadingModels ? 'Loading models…' : 'Select a model from the list...';
+      modelPill.classList.toggle('loading', !!state.loadingModels);
       modelPill.classList.remove('selected');
       modelPill.style.border = '2px solid #061130';
       modelPill.onclick = () => {
         if (state.models && state.models.length) {
           openModelSelect();
+        } else if (state.loadingModels) {
+          // politely tell user we are loading models
+          try { window.alert('Loading models for this series — please wait a moment.'); } catch (e) { /* ignore */ }
+          log('models are still loading; please wait');
         } else {
-          alert('Please choose a series first.');
+          // Truly no models loaded
+          try { window.alert('Please choose a series first.'); } catch (e) { /* ignore */ }
+          log('no models loaded and not currently fetching');
         }
       };
       return;
     }
     modelPill.innerText = `${model.name}${model.brand ? ' — ' + model.brand : ''}`;
     modelPill.classList.add('selected');
+    modelPill.classList.remove('loading');
     modelPill.style.border = '2px dashed rgba(0,0,0,0.06)';
     modelPill.onclick = openModelSelect;
   }
 
   function openModelSelect() {
+    // If models are loading, show message instead of opening empty popup
+    if (state.loadingModels && (!state.models || state.models.length === 0)) {
+      try { window.alert('Models are still loading — give it a second.'); } catch (e) {}
+      log('openModelSelect: waiting for models to load');
+      return;
+    }
+
     const existing = document.getElementById(ns + '-model-select-popup');
     if (existing) { existing.remove(); return; }
     const popup = ce('div'); popup.id = ns + '-model-select-popup';
@@ -240,19 +259,26 @@
     popup.style.maxHeight = '70vh'; popup.style.overflow = 'auto'; popup.style.minWidth = '320px';
     const title = ce('div'); title.style.fontWeight = 800; title.style.marginBottom = '12px'; title.innerText = 'Select model';
     popup.appendChild(title);
-    state.models.forEach(m => {
-      const btn = ce('button'); btn.style.display = 'block'; btn.style.width = '100%'; btn.style.padding = '10px 12px'; btn.style.marginBottom = '8px';
-      btn.style.borderRadius = '10px'; btn.style.border = '1px solid rgba(10,20,40,.06)'; btn.style.background = '#f8fbff';
-      btn.innerText = m.name + (m.brand ? ' — ' + m.brand : '');
-      btn.onclick = () => {
-        state.selectedModel = m;
-        renderModelsPill(m);
-        // load repairs for this model strictly
-        loadRepairsForModel(m._id || m.slug || m.name);
-        popup.remove();
-      };
-      popup.appendChild(btn);
-    });
+
+    if (!state.models || !state.models.length) {
+      const none = ce('div'); none.style.padding = '18px'; none.innerText = 'No models available for this series.';
+      popup.appendChild(none);
+    } else {
+      state.models.forEach(m => {
+        const btn = ce('button'); btn.style.display = 'block'; btn.style.width = '100%'; btn.style.padding = '10px 12px'; btn.style.marginBottom = '8px';
+        btn.style.borderRadius = '10px'; btn.style.border = '1px solid rgba(10,20,40,.06)'; btn.style.background = '#f8fbff';
+        btn.innerText = m.name + (m.brand ? ' — ' + m.brand : '');
+        btn.onclick = () => {
+          state.selectedModel = m;
+          renderModelsPill(m);
+          // load repairs for this model strictly
+          loadRepairsForModel(m._id || m.slug || m.name);
+          popup.remove();
+        };
+        popup.appendChild(btn);
+      });
+    }
+
     const close = ce('button'); close.innerText = 'Close'; close.style.marginTop = '6px';
     close.onclick = () => popup.remove();
     popup.appendChild(close);
@@ -267,8 +293,7 @@
     }
     list.forEach(r => {
       const t = ce('div', ns + '-tile');
-      const img = ce('img'); img.src = (r.images && r.images[0]) || r.iconUrl || '';
-      img.alt = r.name || '';
+      const img = ce('img'); img.src = (r.images && r.images[0]) || r.iconUrl || ''; img.alt = r.name || '';
       const h = ce('h4'); h.innerText = r.name;
       const sub = ce('div'); sub.className = ns + '-muted'; sub.style.marginTop = '8px';
       const pe = (r.priceEffective !== undefined && r.priceEffective !== null) ? r.priceEffective : r.basePrice;
@@ -471,11 +496,11 @@
     });
     if (!state.selectedModel) {
       ok = false;
-      alert('Please select a model.');
+      try { window.alert('Please select a model.'); } catch (e) {}
     }
     if (!state.selectedRepair) {
       ok = false;
-      alert('Please select a repair type.');
+      try { window.alert('Please select a repair type.'); } catch (e) {}
     }
     return ok;
   }
@@ -492,8 +517,8 @@
       mount.appendChild(okWrap);
     }).catch(err => {
       if (btn) { btn.disabled = false; btn.innerText = 'Request repair'; }
-      console.error('submit err', err);
-      alert('Submission failed: ' + (err && (err.error || err.message) ? (err.error || err.message) : 'Unknown error'));
+      errLog('submit err', err);
+      try { window.alert('Submission failed: ' + (err && (err.error || err.message) ? (err.error || err.message) : 'Unknown error')); } catch (e) {}
     });
   }
 
@@ -503,7 +528,7 @@
       state.categories = list || [];
       renderCategories();
     }).catch(err => {
-      console.error('categories err', err);
+      errLog('categories err', err);
       categoryGrid.innerText = 'Failed to load categories';
     });
   }
@@ -512,22 +537,21 @@
   function loadSeriesForCategory(category) {
     if (!category) return;
     const param = encodeURIComponent(category.slug || category._id || category.name || '');
-    console.log('[ramsvc] loadSeriesForCategory -> category param:', param, 'category object:', category);
+    log('loadSeriesForCategory -> category param:', param, 'category object:', category);
 
     apiGET('/api/series?category=' + param).then(list => {
-      console.log('[ramsvc] /api/series?category returned', list && list.length ? list.length : 0, 'items', list);
+      log('/api/series?category returned', list && list.length ? list.length : 0, 'items');
       state.series = list || [];
       renderSeries(state.series);
 
       // fallback client-side if server returned nothing
       if ((!list || list.length === 0) && (category._id || category.slug || category.name)) {
-        console.warn('[ramsvc] empty result for strict query — attempting fallback to /api/series and client-side filter');
+        warn('empty result for strict query — attempting fallback to /api/series and client-side filter');
         apiGET('/api/series').then(all => {
           const filtered = (all || []).filter(s => {
             if (!s) return false;
             const sc = s.category;
             if (!sc) {
-              // check alternative fields
               if (s.categoryId && String(s.categoryId) === String(category._id)) return true;
               if (s.category_id && String(s.category_id) === String(category._id)) return true;
               return false;
@@ -535,20 +559,19 @@
             if (typeof sc === 'string') {
               return sc === String(category._id) || sc === category.slug || sc === category.name;
             } else if (typeof sc === 'object') {
-              return String(sc._id || sc.id || sc).toString() === String(category._id) || (sc.slug && sc.slug === category.slug) || (sc.name && sc.name === category.name);
+              return String(sc._id || sc.id || sc) === String(category._id) || (sc.slug && sc.slug === category.slug) || (sc.name && sc.name === category.name);
             }
             return false;
           });
-          console.log('[ramsvc] fallback filtered series count:', filtered.length);
+          log('fallback filtered series count:', filtered.length);
           state.series = filtered;
           renderSeries(state.series);
         }).catch(err => {
-          console.error('[ramsvc] fallback /api/series failed', err);
+          errLog('fallback /api/series failed', err);
         });
       }
     }).catch(err => {
-      console.error('[ramsvc] /api/series?category error', err);
-      // fallback: get all and client filter
+      errLog('/api/series?category error', err);
       apiGET('/api/series').then(all => {
         const filtered = (all || []).filter(s => {
           if (!s) return false;
@@ -568,18 +591,41 @@
         state.series = filtered;
         renderSeries(state.series);
       }).catch(e2 => {
-        console.error('[ramsvc] fallback /api/series also failed', e2);
+        errLog('fallback /api/series also failed', e2);
       });
     });
   }
 
+  // NEW: load models for a series with loading flag and clear logs
   function loadModelsForSeries(seriesId) {
     if (!seriesId) return;
+    // set loading state so UI knows we're fetching
+    state.loadingModels = true;
+    renderModelsPill(null);
+    log('loading models for seriesId:', seriesId);
+
+    // attempt series/:id/models route
     apiGET('/api/series/' + encodeURIComponent(seriesId) + '/models').then(list => {
+      log('models for series returned', list && list.length ? list.length : 0);
       state.models = list || [];
-      renderModelsPill(null);
+      state.loadingModels = false;
+      renderModelsPill(null); // update pill text
+      // If models exist, optionally auto-open model selector if user already tried to open (UX choice)
+      // (we won't auto-open to avoid surprising the user)
     }).catch(err => {
-      console.error('models for series err', err);
+      warn('models for series err', err);
+      // fallback: try models?series=...
+      apiGET('/api/models?series=' + encodeURIComponent(seriesId)).then(list2 => {
+        log('fallback /api/models?series returned', list2 && list2.length ? list2.length : 0);
+        state.models = list2 || [];
+        state.loadingModels = false;
+        renderModelsPill(null);
+      }).catch(err2 => {
+        errLog('fallback models fetch also failed', err2);
+        state.models = [];
+        state.loadingModels = false;
+        renderModelsPill(null);
+      });
     });
   }
 
@@ -589,7 +635,7 @@
       state.repairs = list || [];
       renderRepairs(state.repairs);
     }).catch(err => {
-      console.error('repairs err', err);
+      errLog('repairs err', err);
       damageGrid.innerText = 'Failed to load repairs';
     });
   }
