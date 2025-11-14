@@ -47,7 +47,7 @@ app.get('/api/categories', async (req, res) => {
   } catch (e) { console.error(e); res.status(500).json({ error: 'Categories load failed' }); }
 });
 
-// series (optionally filter by ?category=slugOrId)
+// GET all series (optional filter by ?category=slugOrId)
 app.get('/api/series', async (req, res) => {
   try {
     const filter = {};
@@ -56,15 +56,24 @@ app.get('/api/series', async (req, res) => {
       if (/^[0-9a-fA-F]{24}$/.test(String(cat))) {
         filter.category = cat;
       } else {
-        const found = await Category.findOne({ $or: [{ slug: cat }, { name: cat }] }).lean();
-        if (!found) return res.json([]);
+        const found = await Category.findOne({ $or:[ { slug: cat }, { name: cat } ] }).lean();
+        if (!found) {
+          // fallback: if series documents accidentally have string category values equal to slug
+          const fallback = await require('./models/Series').find({ category: cat }).lean();
+          if (fallback && fallback.length) return res.json(fallback);
+          return res.json([]);
+        }
         filter.category = found._id;
       }
     }
-    const list = await Series.find(filter).sort({ order: 1 }).lean();
+    const list = await require('./models/Series').find(filter).sort({ order: 1 }).lean();
     res.json(list);
-  } catch (e) { console.error(e); res.status(500).json({ error: 'Series load failed' }); }
+  } catch (err) {
+    console.error('series error', err);
+    res.status(500).json({ error: 'Series load failed' });
+  }
 });
+
 
 // models for a series
 app.get('/api/series/:seriesId/models', async (req, res) => {

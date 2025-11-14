@@ -1,19 +1,14 @@
 const mongoose = require('mongoose');
-const Schema = mongoose.Schema;
-const PriceOverrideSchema = new Schema({
-  repairOptionId: { type: Schema.Types.ObjectId, ref: 'RepairOption' },
-  repairOptionCode: String,
-  price: Number // store cents or whole amount as your chosen unit
-}, { _id: false });
 
-const ModelSchema = new Schema({
+const ModelSchema = new mongoose.Schema({
   name: { type: String, required: true },
-  brand: String,
-  slug: { type: String, required: true },
-  series: { type: Schema.Types.ObjectId, ref: 'Series' },
-  category: { type: Schema.Types.ObjectId, ref: 'Category' },
-  imageUrl: String,
-  priceOverrides: [ PriceOverrideSchema ],
-  order: { type: Number, default: 0 }
-}, { timestamps: true });
+  slug: { type: String, required: true, index: true },
+  brand: { type: String },
+  category: { type: mongoose.Schema.Types.ObjectId, ref: 'Category' }, // ObjectId
+  series: { type: mongoose.Schema.Types.ObjectId, ref: 'Series' },     // ObjectId
+  imageUrl: { type: String },
+  priceOverrides: { type: Array }, // keep flexible for overrides
+  createdAt: { type: Date, default: Date.now }
+});
+
 module.exports = mongoose.model('DeviceModel', ModelSchema);
