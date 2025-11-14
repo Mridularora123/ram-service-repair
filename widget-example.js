@@ -1,4 +1,5 @@
-// RAM Service Repair storefront widget (updated to strict Category->Series->Model->Repairs flow)
+// widget-example.js
+// RAM Service Repair storefront widget (Category -> Series -> Model -> Repairs)
 (function () {
   // ---- CONFIG ----------
   const API_BASE = (window.RAM_SERVICE_API_BASE || '').replace(/\/$/, '') || 'https://ram-service-repair1.onrender.com';
@@ -151,7 +152,8 @@
     state.categories.forEach(cat => {
       const t = ce('div', ns + '-tile');
       t.setAttribute('data-slug', cat.slug || '');
-      const img = ce('img'); img.src = cat.iconUrl || cat.image || ''; img.alt = cat.name || '';
+      const img = ce('img'); img.src = cat.iconUrl || cat.image || '';
+      img.alt = cat.name || '';
       const h = ce('h4'); h.innerText = cat.name;
       t.appendChild(img); t.appendChild(h);
       t.onclick = () => {
@@ -187,7 +189,8 @@
     }
     list.forEach(s => {
       const t = ce('div', ns + '-tile');
-      const img = ce('img'); img.src = s.iconUrl || s.image || ''; img.alt = s.name || '';
+      const img = ce('img'); img.src = s.iconUrl || s.image || '';
+      img.alt = s.name || '';
       const h = ce('h4'); h.innerText = s.name;
       t.appendChild(img); t.appendChild(h);
       t.onclick = () => {
@@ -195,7 +198,7 @@
         qa('.' + ns + '-tile', seriesRow).forEach(c => c.classList.remove('selected'));
         t.classList.add('selected');
         // load models for series (strict)
-        loadModelsForSeries(s._id);
+        loadModelsForSeries(s._id || s.id || s.slug || s.name);
         // reset
         state.selectedModel = null; state.repairs = []; state.selectedRepair = null;
         renderModelsPill(null);
@@ -216,7 +219,6 @@
         if (state.models && state.models.length) {
           openModelSelect();
         } else {
-          // no models loaded yet
           alert('Please choose a series first.');
         }
       };
@@ -265,7 +267,8 @@
     }
     list.forEach(r => {
       const t = ce('div', ns + '-tile');
-      const img = ce('img'); img.src = (r.images && r.images[0]) || r.iconUrl || ''; img.alt = r.name || '';
+      const img = ce('img'); img.src = (r.images && r.images[0]) || r.iconUrl || '';
+      img.alt = r.name || '';
       const h = ce('h4'); h.innerText = r.name;
       const sub = ce('div'); sub.className = ns + '-muted'; sub.style.marginTop = '8px';
       const pe = (r.priceEffective !== undefined && r.priceEffective !== null) ? r.priceEffective : r.basePrice;
@@ -506,56 +509,36 @@
   }
 
   // Robust loadSeriesForCategory: tries strict server query, then flexible fallback queries and finally client-side filter.
-  // Robust loadSeriesForCategory: tries strict server query, then flexible fallback queries and finally client-side filter.
   function loadSeriesForCategory(category) {
     if (!category) return;
     const param = encodeURIComponent(category.slug || category._id || category.name || '');
     console.log('[ramsvc] loadSeriesForCategory -> category param:', param, 'category object:', category);
 
-    // Try strict server-side query first
     apiGET('/api/series?category=' + param).then(list => {
       console.log('[ramsvc] /api/series?category returned', list && list.length ? list.length : 0, 'items', list);
       state.series = list || [];
       renderSeries(state.series);
 
-      // If server gave nothing, try fallback: fetch all series then client-side filter
+      // fallback client-side if server returned nothing
       if ((!list || list.length === 0) && (category._id || category.slug || category.name)) {
         console.warn('[ramsvc] empty result for strict query — attempting fallback to /api/series and client-side filter');
         apiGET('/api/series').then(all => {
-          console.log('[ramsvc] fallback /api/series returned', all && all.length ? all.length : 0, 'items');
-
           const filtered = (all || []).filter(s => {
             if (!s) return false;
-
-            // Accept many shapes: s.category (string or populated object), s.categoryId, s.category_id etc.
-            const scCandidates = [];
-
-            // raw fields
-            if (s.category !== undefined) scCandidates.push(s.category);
-            if (s.categoryId !== undefined) scCandidates.push(s.categoryId);
-            if (s.category_id !== undefined) scCandidates.push(s.category_id);
-
-            // populated object
-            if (s.category && typeof s.category === 'object') {
-              scCandidates.push(s.category._id || s.category.id || s.category.slug || s.category.name);
+            const sc = s.category;
+            if (!sc) {
+              // check alternative fields
+              if (s.categoryId && String(s.categoryId) === String(category._id)) return true;
+              if (s.category_id && String(s.category_id) === String(category._id)) return true;
+              return false;
             }
-
-            // Also accept series whose slug/name matches category (if someone used slug there)
-            scCandidates.push(s.slug);
-            scCandidates.push(s.name);
-
-            // flatten to strings and compare
-            const catIdStr = String(category._id || category.id || category).toLowerCase();
-            const catSlug = (category.slug || '').toLowerCase();
-            const catName = (category.name || '').toLowerCase();
-
-            return scCandidates.some(c => {
-              if (c === null || c === undefined) return false;
-              const cs = String(c).toLowerCase();
-              return cs === catIdStr || cs === catSlug || cs === catName;
-            });
+            if (typeof sc === 'string') {
+              return sc === String(category._id) || sc === category.slug || sc === category.name;
+            } else if (typeof sc === 'object') {
+              return String(sc._id || sc.id || sc).toString() === String(category._id) || (sc.slug && sc.slug === category.slug) || (sc.name && sc.name === category.name);
+            }
+            return false;
           });
-
           console.log('[ramsvc] fallback filtered series count:', filtered.length);
           state.series = filtered;
           renderSeries(state.series);
@@ -565,24 +548,22 @@
       }
     }).catch(err => {
       console.error('[ramsvc] /api/series?category error', err);
-      // Try fallback: fetch all series and client-side filter
+      // fallback: get all and client filter
       apiGET('/api/series').then(all => {
         const filtered = (all || []).filter(s => {
           if (!s) return false;
-          const scCandidates = [];
-          if (s.category !== undefined) scCandidates.push(s.category);
-          if (s.categoryId !== undefined) scCandidates.push(s.categoryId);
-          if (s.category_id !== undefined) scCandidates.push(s.category_id);
-          if (s.category && typeof s.category === 'object') scCandidates.push(s.category._id || s.category.id || s.category.slug || s.category.name);
-          scCandidates.push(s.slug); scCandidates.push(s.name);
-          const catIdStr = String(category._id || category.id || category).toLowerCase();
-          const catSlug = (category.slug || '').toLowerCase();
-          const catName = (category.name || '').toLowerCase();
-          return scCandidates.some(c => {
-            if (c === null || c === undefined) return false;
-            const cs = String(c).toLowerCase();
-            return cs === catIdStr || cs === catSlug || cs === catName;
-          });
+          const sc = s.category;
+          if (!sc) {
+            if (s.categoryId && String(s.categoryId) === String(category._id)) return true;
+            if (s.category_id && String(s.category_id) === String(category._id)) return true;
+            return false;
+          }
+          if (typeof sc === 'string') {
+            return sc === String(category._id) || sc === category.slug || sc === category.name;
+          } else if (typeof sc === 'object') {
+            return String(sc._id || sc.id || sc) === String(category._id) || (sc.slug && sc.slug === category.slug) || (sc.name && sc.name === category.name);
+          }
+          return false;
         });
         state.series = filtered;
         renderSeries(state.series);
@@ -591,7 +572,6 @@
       });
     });
   }
-
 
   function loadModelsForSeries(seriesId) {
     if (!seriesId) return;

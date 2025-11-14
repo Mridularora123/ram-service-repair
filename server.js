@@ -1,3 +1,4 @@
+// server.js
 require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
@@ -15,7 +16,7 @@ const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
-// Serve widget file
+// Serve widget file (make sure widget-example.js exists in project root)
 app.get('/widget.js', (req, res) => {
   res.type('application/javascript');
   res.sendFile(path.join(__dirname, 'widget-example.js'));
@@ -59,59 +60,57 @@ app.get('/api/categories', async (req, res) => {
 /**
  * GET series
  * Optional query param: ?category=slugOrIdOrName
- * This route is robust:
- * - If category param looks like ObjectId -> query by category ObjectId
- * - Else try to find Category by slug/name and use its _id
- * - Else run a flexible $or query to match series when series.category stored as:
- *     - string (slug/name/ObjectId string)
- *     - populated object { _id, slug, name }
- *     - legacy fields like categoryId or category_id
- * - Return empty array if nothing found
+ * Robust: supports category stored as ObjectId, categoryId, category_id, populated category object, slug or name.
  */
 app.get('/api/series', async (req, res) => {
   try {
     const qcat = req.query.category;
-    const filter = {};
 
-    if (qcat) {
-      // 1) If looks like ObjectId -> assume id
-      if (/^[0-9a-fA-F]{24}$/.test(String(qcat))) {
-        // find by exact ObjectId stored in series.category (if it's an ObjectId)
-        filter.category = qcat;
-      } else {
-        // 2) Try to find a Category document whose slug or name equals qcat
-        const foundCat = await Category.findOne({ $or: [{ slug: qcat }, { name: qcat }] }).lean();
-        if (foundCat) {
-          filter.category = foundCat._id;
-        } else {
-          // 3) Flexible fallback: attempt to match series where category may be stored in various shapes.
-          // This will match series that store category as a string id/slug/name or as a populated object.
-          const q = qcat;
-          const flexibleFilter = {
-            $or: [
-              { category: q },            // category stored as string (slug or name or id-string)
-              { 'category.slug': q },     // populated category object with slug
-              { 'category.name': q },     // populated category object with name
-              { categoryId: q },          // legacy field
-              { category_id: q },         // legacy field
-              { slug: q },                // series slug
-              { name: q }                 // series name
-            ]
-          };
-          const fallbackList = await Series.find(flexibleFilter).sort({ order: 1 }).populate('category').lean();
-          if (fallbackList && fallbackList.length) {
-            console.log('[server] /api/series fallback matched', fallbackList.length, 'items for category query:', qcat);
-            return res.json(fallbackList);
-          }
-          // 4) No matches at all
-          return res.json([]);
-        }
-      }
+    // If no category param -> return all series
+    if (!qcat) {
+      const list = await Series.find({}).sort({ order: 1 }).populate('category').lean();
+      return res.json(list);
     }
 
-    // Normal path: use `filter` which may have category:_id or be empty
-    const list = await Series.find(filter).sort({ order: 1 }).populate('category').lean();
-    res.json(list);
+    // If qcat looks like an ObjectId -> try id-like matches
+    if (/^[0-9a-fA-F]{24}$/.test(String(qcat))) {
+      const list = await Series.find({
+        $or: [
+          { category: qcat },         // ObjectId stored
+          { categoryId: String(qcat) },
+          { category_id: String(qcat) }
+        ]
+      }).sort({ order: 1 }).populate('category').lean();
+      return res.json(list);
+    }
+
+    // Try to resolve qcat to a Category doc (by slug or name)
+    const foundCat = await Category.findOne({ $or: [{ slug: qcat }, { name: qcat }] }).lean();
+    if (foundCat) {
+      const list = await Series.find({
+        $or: [
+          { category: foundCat._id },
+          { categoryId: String(foundCat._id) },
+          { category_id: String(foundCat._id) }
+        ]
+      }).sort({ order: 1 }).populate('category').lean();
+      return res.json(list);
+    }
+
+    // Flexible fallback: match series documents with different shapes/fields
+    const flexibleList = await Series.find({
+      $or: [
+        { category: qcat },           // category stored as slug/name/string
+        { categoryId: qcat },
+        { category_id: qcat },
+        { 'category.slug': qcat },    // populated category object
+        { 'category.name': qcat },
+        { slug: qcat },               // series slug itself
+        { name: qcat }                // series name itself
+      ]
+    }).sort({ order: 1 }).populate('category').lean();
+
+    return res.json(flexibleList || []);
   } catch (err) {
     console.error('series err', err);
     res.status(500).json({ error: 'Series load failed' });
@@ -132,56 +131,17 @@ app.get('/api/models', async (req, res) => {
 });
 
 // GET models for a series
-// GET series (optional ?category=slugOrId)
-app.get('/api/series', async (req, res) => {
+app.get('/api/series/:seriesId/models', async (req, res) => {
   try {
-    const qcat = req.query.category;
-    const filter = {};
-
-    if (qcat) {
-      // if qcat looks like ObjectId, try match by ObjectId in common fields
-      if (/^[0-9a-fA-F]{24}$/.test(String(qcat))) {
-        // match common series fields that can reference category
-        filter.$or = [
-          { category: qcat },         // category stored as ObjectId
-          { categoryId: qcat },       // alternative field
-          { category_id: qcat }       // another possible naming
-        ];
-      } else {
-        // try to resolve qcat to a category _id (by slug or name)
-        const found = await Category.findOne({ $or: [{ slug: qcat }, { name: qcat }] }).lean();
-        if (found) {
-          filter.$or = [
-            { category: found._id },
-            { categoryId: String(found._id) },
-            { category_id: String(found._id) }
-          ];
-        } else {
-          // if not found, still allow flexible server-side matching on series documents:
-          const q = qcat;
-          filter.$or = [
-            { category: q },            // category stored as slug or name string
-            { categoryId: q },
-            { category_id: q },
-            { 'category.slug': q },
-            { 'category.name': q },
-            { slug: q },                // series slug equals q
-            { name: q }                 // series name equals q
-          ];
-        }
-      }
-    }
-
-    const list = await Series.find(filter).sort({ order: 1 }).populate('category').lean();
-    res.json(list);
+    const models = await DeviceModel.find({ series: req.params.seriesId }).sort({ order: 1 }).populate('repairs').lean();
+    res.json(models);
   } catch (err) {
-    console.error('series err', err);
-    res.status(500).json({ error: 'Series load failed' });
+    console.error('series models err', err);
+    res.status(500).json({ error: 'Models for series failed' });
   }
 });
 
-
-// GET repairs (global). Optional ?modelId to filter to model-supported repairs and compute effective prices.
+// GET repairs (global). Optional ?modelId to compute effective prices / filter
 app.get('/api/repairs', async (req, res) => {
   try {
     const modelId = req.query.modelId;
@@ -190,12 +150,10 @@ app.get('/api/repairs', async (req, res) => {
     if (modelId) {
       const model = await DeviceModel.findById(modelId).lean();
       if (model) {
-        // if model.repairs exists, limit to those
         if (Array.isArray(model.repairs) && model.repairs.length) {
           const allowedIds = model.repairs.map(r => String(r));
           repairs = repairs.filter(r => allowedIds.includes(String(r._id)));
         }
-        // compute priceEffective for each repair based on model overrides
         repairs = repairs.map(r => {
           const clone = { ...r };
           let effective = (r.basePrice !== undefined && r.basePrice !== null) ? r.basePrice : null;
@@ -261,8 +219,6 @@ app.post('/api/submit', async (req, res) => {
 });
 
 // ----------------- ADMIN CRUD WITH VALIDATION -----------------
-// (unchanged from your original; kept here for completeness)
-
 app.post('/admin/category', adminAuth, async (req, res) => {
   try {
     if (req.body.slug) {
