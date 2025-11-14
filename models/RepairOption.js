@@ -2,19 +2,14 @@
 const mongoose = require('mongoose');
 const Schema = mongoose.Schema;
 
-const RepairSchema = new Schema({
-  code: { type: String, required: true, unique: true }, // internal code
+const RepairOptionSchema = new Schema({
   name: { type: String, required: true },
+  code: { type: String, required: true, index: true }, // unique code
   description: String,
-  basePrice: { type: Number, default: null }, // in cents (Number) — null => call-for-price
-  currency: { type: String, default: 'EUR' },
-  etaDays: Number,
-  warrantyText: String,
-  images: { type: [String], default: [] },
-  notes: String,
+  basePrice: Number,
+  images: [String],
   visible: { type: Boolean, default: true },
-  order: { type: Number, default: 0 },
-  meta: Schema.Types.Mixed
+  order: { type: Number, default: 0 }
 }, { timestamps: true });
 
-module.exports = mongoose.model('RepairOption', RepairSchema);
+module.exports = mongoose.model('RepairOption', RepairOptionSchema);
